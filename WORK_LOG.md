@@ -118,4 +118,48 @@ Key decisions:
 
 ---
 
-> `[2026-03-04T14:27:45Z]` **Edit** → `CLAUDE.md`
+> `[2026-03-04T14:27:45Z]` **Edit** → `CLAUDE.md`## Session 002 — 2026-03-04
+
+### Human Request
+> Paste of all existing coach module files (engine.py, server.py, crystallizer.py, memory.py, tools.py, test_hardening.py, __init__.py, __main__.py, coach-priya.md, config-coach-auth.js, knowledge/hoopla-domain.md, knowledge/topic-index.json, roles/coach.md). Request to 'build as much as you can.' User confirms agent_backend.py and context_assembler.py may not exist yet (building from scratch). User is open to Slack frontend instead of HTML demo UI.
+
+### Chain of Thought
+The pasted code is complete for pipeline/coach/ but has two key gaps: (1) pipeline/backends/ is entirely missing — every import fails without it, (2) engine.py appears TWICE in the paste (exact duplicate, copy-paste artifact) — must deduplicate. 
+
+Key decisions:
+- Build pipeline/backends/ with base.py (AgentBackend ABC + AgentResult dataclass + _extract_text utility), plus OllamaBackend, LlamaCppBackend (Phase 1 priority), BedrockBackend, AssistedBackend
+- LlamaCppBackend uses OpenAI-compatible API (what llama.cpp server exposes natively) — no special SDK needed, stdlib urllib only
+- AssistedBackend uses Anthropic SDK directly — useful for dev/testing without Ollama
+- agentcore CLI option redirects to BedrockBackend as a stub (real AgentCore integration is Phase 4)
+- Add 'llamacpp' to CLI backend choices in __main__.py
+- HTML demo is minimal (test harness only) — Slack integration noted as Phase 2.5 follow-up
+- Orchestrate with parallel subagents: Agent A writes coach module files, Agent B writes support files, main agent writes backends
+
+> `[2026-03-04T14:45:51Z]` **Write** → `pipeline/backends/base.py`
+> `[2026-03-04T14:46:13Z]` **Write** → `pipeline/backends/ollama.py`
+> `[2026-03-04T14:46:43Z]` **Write** → `pipeline/backends/llamacpp.py`
+> `[2026-03-04T14:46:48Z]` **Write** → `pipeline/__init__.py`
+> `[2026-03-04T14:47:02Z]` **Write** → `pipeline/coach/__init__.py`
+> `[2026-03-04T14:47:10Z]` **Write** → `pipeline/backends/bedrock.py`
+> `[2026-03-04T14:47:20Z]` **Write** → `pipeline/coach/__main__.py`
+> `[2026-03-04T14:47:36Z]` **Write** → `pipeline/backends/assisted.py`
+> `[2026-03-04T14:47:54Z]` **Write** → `pipeline/backends/__init__.py`
+> `[2026-03-04T14:48:02Z]` **Write** → `pipeline/coach/crystallizer.py`
+> `[2026-03-04T14:48:23Z]` **Edit** → `pipeline/__init__.py`
+> `[2026-03-04T14:49:02Z]` **Write** → `pipeline/intake/domain-context/hoopla-domain.md`
+> `[2026-03-04T14:51:22Z]` **Write** → `pipeline/methodology/personas/coach-priya.md`
+> `[2026-03-04T14:51:27Z]` **Write** → `pipeline/coach/engine.py`
+> `[2026-03-04T14:51:59Z]` **Write** → `pipeline/dashboard/config-coach-auth.js`
+> `[2026-03-04T14:52:05Z]` **Write** → `pipeline/coach/memory.py`
+> `[2026-03-04T14:52:56Z]` **Write** → `pipeline/coach/server.py`
+> `[2026-03-04T14:52:56Z]` **Write** → `knowledge/topic-index.json`
+> `[2026-03-04T14:53:48Z]` **Write** → `roles/coach.md`
+> `[2026-03-04T14:54:04Z]` **Write** → `demo/index.html`
+> `[2026-03-04T14:54:11Z]` **Write** → `requirements.txt`
+> `[2026-03-04T14:54:47Z]` DONE: Agent B wrote all support files (domain-context, persona, demo UI, requirements)
+> `[2026-03-04T14:54:52Z]` DONE: Agent B wrote all support files (domain-context, persona, demo UI, requirements)
+> `[2026-03-04T14:54:57Z]` DONE: Agent B wrote all support files (domain-context, persona, demo UI, requirements)
+> `[2026-03-04T14:55:08Z]` DONE: Agent B wrote all support files (domain-context, persona, demo UI, requirements)
+> `[2026-03-04T14:55:46Z]` **Write** → `pipeline/coach/test_hardening.py`
+> `[2026-03-04T14:56:41Z]` **Write** → `pipeline/coach/tools.py`
+> `[2026-03-04T23:53:01Z]` **Edit** → `pipeline/coach/crystallizer.py`

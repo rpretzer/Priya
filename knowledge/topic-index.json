@@ -1,0 +1,368 @@
+{
+  "$comment": "Maps conversation topics to knowledge base sections in hoopla-domain.md. Used by ContextAssembler to surface relevant domain context based on detected topics in the current conversation. Keys are topic identifiers; values describe the mapping.",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "1.0.0",
+  "last_updated": "2026-03-03",
+  "source_file": "knowledge/hoopla-domain.md",
+  "topics": {
+    "per_circulation_revenue": {
+      "label": "Per-Circulation Revenue Model",
+      "keywords": [
+        "circulation",
+        "borrow",
+        "cost per borrow",
+        "library budget",
+        "spending limit",
+        "circulation fee",
+        "revenue model",
+        "billing",
+        "per-checkout"
+      ],
+      "section": "2. Revenue Model — Per-Circulation",
+      "priority": "high",
+      "coach_note": "Trigger push-back if impact claims do not account for per-circulation cost implications."
+    },
+    "b2b2c_model": {
+      "label": "B2B2C Business Model",
+      "keywords": [
+        "library admin",
+        "patron",
+        "end user",
+        "library customer",
+        "b2b",
+        "b2c",
+        "admin controls",
+        "library portal",
+        "admin dashboard"
+      ],
+      "section": "3. Business Model — B2B2C",
+      "priority": "high",
+      "coach_note": "Ensure both admin and patron audiences are addressed in business cases."
+    },
+    "platform_scope": {
+      "label": "Client Platforms",
+      "keywords": [
+        "iOS",
+        "Android",
+        "web",
+        "Kindle",
+        "Roku",
+        "Apple TV",
+        "Fire TV",
+        "platform",
+        "mobile",
+        "tablet",
+        "streaming device",
+        "all platforms",
+        "cross-platform"
+      ],
+      "section": "4. Client Platforms",
+      "priority": "high",
+      "coach_note": "Challenge 'all platforms' scope claims. Ask for explicit platform prioritization."
+    },
+    "kmp_migration": {
+      "label": "Kotlin Multiplatform Migration",
+      "keywords": [
+        "KMP",
+        "Kotlin Multiplatform",
+        "shared business logic",
+        "Android migration",
+        "cross-platform logic"
+      ],
+      "section": "4. Client Platforms",
+      "priority": "medium",
+      "coach_note": "Flag KMP migration risk for Android features touching business logic."
+    },
+    "swiftui_migration": {
+      "label": "SwiftUI Migration",
+      "keywords": [
+        "SwiftUI",
+        "UIKit",
+        "iOS migration",
+        "iOS modernization"
+      ],
+      "section": "4. Client Platforms",
+      "priority": "medium",
+      "coach_note": "Flag SwiftUI alignment for new iOS features."
+    },
+    "accessibility": {
+      "label": "WCAG AA Accessibility",
+      "keywords": [
+        "accessibility",
+        "WCAG",
+        "screen reader",
+        "VoiceOver",
+        "TalkBack",
+        "ADA",
+        "captioning",
+        "color contrast",
+        "focus indicator",
+        "tap target",
+        "a11y"
+      ],
+      "section": "5. Accessibility Requirements",
+      "priority": "high",
+      "coach_note": "Flag missing accessibility section in business case. WCAG AA is contractually required."
+    },
+    "drm": {
+      "label": "Digital Rights Management",
+      "keywords": [
+        "DRM",
+        "digital rights",
+        "offline access",
+        "download",
+        "Widevine",
+        "FairPlay",
+        "Adobe ADEPT",
+        "content protection",
+        "offline",
+        "streaming only",
+        "publisher contract"
+      ],
+      "section": "6. DRM — Digital Rights Management",
+      "priority": "high",
+      "coach_note": "Flag DRM complexity as risk when offline access or download features are proposed."
+    },
+    "consortia": {
+      "label": "Library Consortia",
+      "keywords": [
+        "consortia",
+        "consortium",
+        "multi-branch",
+        "library system",
+        "member library",
+        "branch",
+        "federation"
+      ],
+      "section": "7. Library Consortia",
+      "priority": "medium",
+      "coach_note": "Clarify whether feature scope is single-library or consortia-level."
+    },
+    "content_lifecycle": {
+      "label": "Content Lifecycle",
+      "keywords": [
+        "content ingestion",
+        "catalog",
+        "metadata",
+        "publisher",
+        "distributor",
+        "content pipeline",
+        "MARC",
+        "catalog management"
+      ],
+      "section": "8. Content Lifecycle",
+      "priority": "medium",
+      "coach_note": "Ask which lifecycle stage is affected by the proposed feature."
+    },
+    "metrics_definitions": {
+      "label": "Key Metrics and Definitions",
+      "keywords": [
+        "active patron",
+        "holds",
+        "simultaneous use",
+        "library card",
+        "ILS",
+        "MARC record",
+        "discovery",
+        "completion rate",
+        "budget utilization",
+        "metric",
+        "KPI"
+      ],
+      "section": "9. Key Metrics and Definitions",
+      "priority": "medium",
+      "coach_note": "Use these definitions to push back on vague metric claims."
+    },
+    "coppa": {
+      "label": "COPPA Compliance",
+      "keywords": [
+        "COPPA",
+        "children",
+        "minors",
+        "under 13",
+        "kids",
+        "child",
+        "youth",
+        "juvenile",
+        "young readers"
+      ],
+      "section": "10. Regulatory and Compliance Context",
+      "priority": "critical",
+      "coach_note": "COPPA flag is a hard stop. Must be raised immediately when minors are mentioned."
+    },
+    "privacy": {
+      "label": "Privacy and Data Compliance",
+      "keywords": [
+        "GDPR",
+        "CCPA",
+        "privacy",
+        "patron data",
+        "reading history",
+        "data collection",
+        "analytics",
+        "tracking",
+        "third party",
+        "consent"
+      ],
+      "section": "10. Regulatory and Compliance Context",
+      "priority": "high",
+      "coach_note": "Flag privacy impact when patron data collection or sharing is proposed."
+    },
+    "erate": {
+      "label": "E-Rate and CIPA",
+      "keywords": [
+        "E-Rate",
+        "CIPA",
+        "content filtering",
+        "federal funding",
+        "internet safety"
+      ],
+      "section": "10. Regulatory and Compliance Context",
+      "priority": "medium",
+      "coach_note": "Note E-Rate implications for content filtering features."
+    },
+    "content_types": {
+      "label": "Content Catalog Types",
+      "keywords": [
+        "ebook",
+        "audiobook",
+        "comic",
+        "graphic novel",
+        "movie",
+        "TV",
+        "music",
+        "BingePass",
+        "video",
+        "streaming",
+        "reading"
+      ],
+      "section": "1. What Hoopla Is",
+      "priority": "medium",
+      "coach_note": "Ensure business cases specify which content types are in scope."
+    },
+    "admin_controls": {
+      "label": "Library Admin Controls",
+      "keywords": [
+        "spending limit",
+        "content filter",
+        "borrow cap",
+        "admin setting",
+        "library configuration",
+        "admin portal",
+        "restrict",
+        "block",
+        "allow"
+      ],
+      "section": "3. Business Model — B2B2C",
+      "priority": "high",
+      "coach_note": "Ensure features that affect borrow rates include admin control mechanisms."
+    },
+    "discovery": {
+      "label": "Content Discovery",
+      "keywords": [
+        "recommendation",
+        "search",
+        "browse",
+        "discovery",
+        "curated list",
+        "featured",
+        "trending",
+        "personalization",
+        "suggestion"
+      ],
+      "section": "12. Common Anti-Patterns in Hoopla Feature Requests",
+      "priority": "high",
+      "coach_note": "Discovery features drive borrows and have direct per-circulation cost impact. Require cost-impact analysis."
+    },
+    "social_features": {
+      "label": "Social and Sharing Features",
+      "keywords": [
+        "social",
+        "share",
+        "friend",
+        "reading history",
+        "review",
+        "rating",
+        "community",
+        "follow",
+        "activity feed"
+      ],
+      "section": "12. Common Anti-Patterns in Hoopla Feature Requests",
+      "priority": "high",
+      "coach_note": "Social features require privacy impact analysis and patron consent flows."
+    },
+    "notifications": {
+      "label": "Patron Notifications",
+      "keywords": [
+        "notification",
+        "push notification",
+        "email",
+        "alert",
+        "remind",
+        "notify",
+        "hold ready",
+        "available"
+      ],
+      "section": "12. Common Anti-Patterns in Hoopla Feature Requests",
+      "priority": "medium",
+      "coach_note": "Notifications require patron consent, platform-specific implementation, and defined success metrics."
+    }
+  },
+  "anti_patterns": {
+    "recommendation_engine": {
+      "label": "Vague Recommendation Engine Request",
+      "trigger_phrases": [
+        "add a recommendation engine",
+        "add recommendations",
+        "recommend content",
+        "personalized recommendations"
+      ],
+      "section": "12. Common Anti-Patterns in Hoopla Feature Requests",
+      "coach_response": "Push back: what discovery gap is this solving? What is the per-circulation cost impact?"
+    },
+    "improve_search": {
+      "label": "Vague Search Improvement Request",
+      "trigger_phrases": [
+        "improve search",
+        "better search",
+        "fix search",
+        "search is bad"
+      ],
+      "section": "12. Common Anti-Patterns in Hoopla Feature Requests",
+      "coach_response": "Push back: what search behavior is failing? For which users? What measurable outcome defines 'improved'?"
+    },
+    "kids_section": {
+      "label": "Kids or Children's Section",
+      "trigger_phrases": [
+        "kids section",
+        "children's section",
+        "build a kids",
+        "add a kids"
+      ],
+      "section": "12. Common Anti-Patterns in Hoopla Feature Requests",
+      "coach_response": "Immediate COPPA flag. Must be raised before any feature work discussion proceeds."
+    },
+    "all_platforms": {
+      "label": "All-Platforms Scope Claim",
+      "trigger_phrases": [
+        "all platforms",
+        "every platform",
+        "all devices",
+        "everywhere"
+      ],
+      "section": "4. Client Platforms",
+      "coach_response": "Challenge: which platforms are truly required for launch vs. future? Require explicit platform prioritization."
+    },
+    "increase_engagement": {
+      "label": "Engagement as Metric",
+      "trigger_phrases": [
+        "increase engagement",
+        "improve engagement",
+        "drive engagement",
+        "boost engagement"
+      ],
+      "section": "12. Common Anti-Patterns in Hoopla Feature Requests",
+      "coach_response": "Engagement is not a metric. Define what it means in per-circulation terms. Current baseline? Target?"
+    }
+  }
+}
