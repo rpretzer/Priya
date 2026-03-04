@@ -234,3 +234,35 @@ All LLM calls go through `AgentBackend.chat()` and `AgentBackend.chat_stream()`.
 - Priya's behavioral contract does not change across phases
 - `test_hardening.py` must pass at every phase boundary
 - The spec funnel boundary holds regardless of what agents are added downstream
+
+## Work Logging Protocol
+
+Every Claude Code session and every subagent **must** append a work record to `WORK_LOG.md`. This is not optional — it is how we maintain repeatability and decision traceability across sessions.
+
+### Automated (hook)
+A `PostToolUse` hook in `~/.claude/settings.json` fires on every `Write`, `Edit`, and `NotebookEdit` call and appends a timestamped line to `WORK_LOG.md` via `scripts/log_work.py --hook`. This captures the "what" automatically.
+
+### Manual (required)
+At the **start** of each response to a human request, append a `### Human Request` entry summarizing what was asked.
+
+At the **end** of each significant task, append `### Chain of Thought` and `### Steps` entries capturing:
+- Key decisions made and why alternatives were rejected
+- Constraints or surprises encountered
+- What was produced
+
+Use `scripts/log_work.py`:
+```bash
+# Append a narrative block (use \n for newlines)
+python3 scripts/log_work.py --entry "### Human Request\n> Asked for X\n"
+
+# Append a single decision line
+python3 scripts/log_work.py --line "DECISION: chose FAISS over ChromaDB for simplicity"
+```
+
+### Subagent Convention
+When launching a subagent via the `Agent` tool, instruct it to:
+1. Append a `### Human Request` entry at the start
+2. Append `### Chain of Thought`, `### Steps`, and `### Outputs` entries before returning
+
+### Session Structure
+Each session in `WORK_LOG.md` is a `##` block: `## Session NNN — YYYY-MM-DD`. Start a new block at the beginning of each Claude Code session.
