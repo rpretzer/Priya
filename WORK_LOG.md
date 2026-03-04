@@ -163,3 +163,6 @@ Key decisions:
 > `[2026-03-04T14:55:46Z]` **Write** → `pipeline/coach/test_hardening.py`
 > `[2026-03-04T14:56:41Z]` **Write** → `pipeline/coach/tools.py`
 > `[2026-03-04T23:53:01Z]` **Edit** → `pipeline/coach/crystallizer.py`
+> `[2026-03-04T23:54:34Z]` **Write** → `docs/UPGRADE_V1_TO_V2.md`
+> `[2026-03-04T23:55:26Z]` **Write** → `docs/PROJECT_STRUCTURE.md`
+> `[2026-03-04T23:56:20Z]` **Write** → `docs/FINETUNE.md`
