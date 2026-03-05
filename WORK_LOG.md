@@ -166,3 +166,14 @@ Key decisions:
 > `[2026-03-04T23:54:34Z]` **Write** → `docs/UPGRADE_V1_TO_V2.md`
 > `[2026-03-04T23:55:26Z]` **Write** → `docs/PROJECT_STRUCTURE.md`
 > `[2026-03-04T23:56:20Z]` **Write** → `docs/FINETUNE.md`
+> `[2026-03-05T01:17:06Z]` **Edit** → `pipeline/coach/server.py`
+> `[2026-03-05T01:17:10Z]` **Edit** → `pipeline/coach/server.py`
+> `[2026-03-05T01:17:15Z]` **Edit** → `pipeline/coach/server.py`
+> `[2026-03-05T01:17:22Z]` **Edit** → `pipeline/coach/server.py`
+> `[2026-03-05T01:22:04Z]` **Write** → `pipeline/slack/bot.py`
+> `[2026-03-05T01:23:12Z]` **Write** → `pipeline/cli/chat.py`
+> `[2026-03-05T01:23:47Z]` **Write** → `demo/app.js`
+> `[2026-03-05T01:24:39Z]` **Write** → `demo/style.css`
+> `[2026-03-05T01:25:01Z]` **Write** → `demo/index.html`
+> `[2026-03-05T01:26:36Z]` **Write** → `demo/README.md`
+> `[2026-03-05T01:26:44Z]` **Edit** → `requirements.txt`

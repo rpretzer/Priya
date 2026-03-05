@@ -94,14 +94,9 @@ class CoachHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _send_sse_chunk(self, data: str) -> None:
-        """Write one SSE event chunk."""
-        line = f"data: {json.dumps({'chunk': data})}\n\n"
-        self.wfile.write(line.encode())
-        self.wfile.flush()
-
-    def _send_sse_done(self) -> None:
-        self.wfile.write(b"data: [DONE]\n\n")
+    def _send_ndjson(self, data: dict) -> None:
+        """Write one NDJSON line."""
+        self.wfile.write((json.dumps(data) + "\n").encode())
         self.wfile.flush()
 
     def _read_body(self) -> bytes:
@@ -127,6 +122,8 @@ class CoachHandler(BaseHTTPRequestHandler):
             self._handle_health()
         elif path == "/api/coach/status":
             self._handle_status()
+        elif path == "/api/coach/commands":
+            self._handle_commands()
         elif path.startswith("/demo") and self.demo_dir:
             self._handle_demo(path)
         else:
@@ -155,6 +152,18 @@ class CoachHandler(BaseHTTPRequestHandler):
             "status": "ok" if ok else "degraded",
             "backend": self.backend.name,
         })
+
+    def _handle_commands(self) -> None:
+        from pipeline.coach.tools import COMMANDS
+        commands = [
+            {
+                "command": cmd,
+                "description": info.get("description", ""),
+                "usage": info.get("usage", cmd),
+            }
+            for cmd, info in COMMANDS.items()
+        ]
+        self._send_json(200, {"commands": commands})
 
     def _handle_status(self) -> None:
         session_id = self._session_id()
@@ -196,9 +205,9 @@ class CoachHandler(BaseHTTPRequestHandler):
 
         engine = _get_or_create_engine(session_id, self.backend, self.memory)
 
-        # Stream SSE response
+        # Stream NDJSON response — one JSON object per line
         self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Type", "application/x-ndjson")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("X-Session-Id", session_id)
@@ -206,12 +215,11 @@ class CoachHandler(BaseHTTPRequestHandler):
 
         try:
             for chunk in engine.chat_stream(message, attachments=attachments):
-                self._send_sse_chunk(chunk)
-            self._send_sse_done()
+                self._send_ndjson({"type": "token", "text": chunk})
+            self._send_ndjson({"type": "done"})
         except Exception:
             err = traceback.format_exc()
-            self._send_sse_chunk(f"[Error: {err}]")
-            self._send_sse_done()
+            self._send_ndjson({"type": "error", "text": err})
 
     def _handle_upload(self) -> None:
         """Accept a file upload and return its text content for use as an attachment."""
