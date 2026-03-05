@@ -197,3 +197,32 @@ Key decisions:
 > `[2026-03-05T02:11:35Z]` **Edit** → `demo/app.js`
 > `[2026-03-05T02:11:41Z]` **Edit** → `demo/app.js`
 > `[2026-03-05T02:11:41Z]` **Write** → `docs/COOKBOOK.md`
+> `[2026-03-05T11:40:57Z]` **Edit** → `pipeline/coach/__main__.py`
+> `[2026-03-05T11:41:44Z]` **Write** → `pipeline/coach/model_server.py`
+> `[2026-03-05T11:44:39Z]` **Write** → `pipeline/coach/backend_validator.py`
+> `[2026-03-05T11:44:56Z]` **Edit** → `pipeline/coach/__main__.py`
+> `[2026-03-05T11:45:05Z]` **Edit** → `pipeline/coach/__main__.py`
+> `[2026-03-05T11:45:09Z]` **Edit** → `pipeline/coach/__main__.py`## Session 003 — 2026-03-05
+
+### Human Request
+> Resume main tasks: fix model_path bug, build ModelServer, build BackendValidator, wire into CLI.
+
+### Chain of Thought
+Phase 1 had three uncommitted gaps: (1) constructor arg mismatch (model_path vs model) in __main__.py, (2) ModelServer not built, (3) BackendValidator not built. Session also started with uncommitted changes from Session 002 — committed those first.
+
+Key decisions:
+- ModelServer: subprocess-based (not llama-cpp-python embedding) — keeps dependency surface small and matches how llama.cpp is actually deployed. Auto-restart on crash up to MAX_RESTARTS=3. Health polling with 120s startup timeout.
+- BackendValidator: two-phase — heuristic tests via pytest subprocess (no LLM needed), then live behavioral probes via CoachEngine directly. Live probes mirror the live Ollama tests in test_hardening.py but are backend-agnostic. This avoids modifying the stable test_hardening.py.
+- CLI wiring: --llamacpp-url for connecting to existing server; auto-starts ModelServer if --model is a file path that exists. Falls back to default port if neither.
+
+### Steps
+1. Fixed model_path -> model constructor arg in __main__.py
+2. Built pipeline/coach/model_server.py (ModelServer + ServerConfig + ServerHandle + CLI shim)
+3. Built pipeline/coach/backend_validator.py (BackendValidator + ValidationReport + 8 live behavioral probes + CLI)
+4. Added --llamacpp-url, --llamacpp-ctx-size, --llamacpp-gpu-layers to CLI parser
+5. Wired ModelServer auto-start into _build_backend() for llamacpp path
+
+### Outputs
+- pipeline/coach/model_server.py (new)
+- pipeline/coach/backend_validator.py (new)
+- pipeline/coach/__main__.py (updated)

@@ -70,6 +70,15 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Path to SQLite memory database (default: ~/.hoopla/memory.db)")
     parser.add_argument("--workers", type=int, default=1,
                         help="Number of uvicorn worker processes (default: 1)")
+    # llama.cpp-specific options
+    parser.add_argument("--llamacpp-url", default=None, dest="llamacpp_url",
+                        help="llama.cpp server URL (default: http://localhost:8080). "
+                             "If not set and --backend=llamacpp, a local server is started "
+                             "automatically using ModelServer.")
+    parser.add_argument("--llamacpp-ctx-size", type=int, default=4096, dest="llamacpp_ctx_size",
+                        help="llama.cpp context window size (default: 4096)")
+    parser.add_argument("--llamacpp-gpu-layers", type=int, default=0, dest="llamacpp_gpu_layers",
+                        help="llama.cpp GPU offload layers (default: 0 = CPU only)")
     return parser
 
 
@@ -77,7 +86,7 @@ def _build_parser() -> argparse.ArgumentParser:
 # Backend factory
 # ---------------------------------------------------------------------------
 
-def _build_backend(backend_name: str, model: str | None):
+def _build_backend(backend_name: str, model: str | None, args=None):
     """Instantiate the requested AgentBackend."""
     if backend_name == "ollama":
         from pipeline.backends.ollama import OllamaBackend
@@ -85,7 +94,27 @@ def _build_backend(backend_name: str, model: str | None):
     elif backend_name == "llamacpp":
         try:
             from pipeline.backends.llamacpp import LlamaCppBackend
-            return LlamaCppBackend(model_path=model)
+            llamacpp_url = getattr(args, "llamacpp_url", None) if args else None
+            if llamacpp_url:
+                # Connect to a pre-existing llama.cpp server
+                return LlamaCppBackend(model=model, base_url=llamacpp_url)
+            else:
+                # No URL provided — start ModelServer automatically if a model path is given
+                if model and os.path.exists(model):
+                    from pipeline.coach.model_server import ModelServer, ServerConfig
+                    ctx_size = getattr(args, "llamacpp_ctx_size", 4096) if args else 4096
+                    gpu_layers = getattr(args, "llamacpp_gpu_layers", 0) if args else 0
+                    config = ServerConfig(
+                        model_path=model,
+                        ctx_size=ctx_size,
+                        gpu_layers=gpu_layers,
+                    )
+                    _model_server = ModelServer(config)
+                    handle = _model_server.start()
+                    return LlamaCppBackend(model=model, base_url=handle.base_url)
+                else:
+                    # No model path — assume server already running on default port
+                    return LlamaCppBackend(model=model)
         except ImportError:
             print("ERROR: llamacpp backend not available. Check pipeline/backends/llamacpp.py.",
                   file=sys.stderr)
@@ -127,7 +156,7 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     _validate_env(args.backend)
-    backend = _build_backend(args.backend, args.model)
+    backend = _build_backend(args.backend, args.model, args)
 
     from pipeline.coach.server import create_app
     import uvicorn
