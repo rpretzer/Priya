@@ -26,3 +26,11 @@ rich>=13.0.0
 
 # Optional: faster PDF text extraction
 # pypdf>=4.0.0
+
+# Phase 2 — RAG (retrieval-augmented domain context)
+# numpy is required for NumpyVectorStore similarity search
+numpy>=1.26.0
+# sentence-transformers provides semantic embeddings (best RAG quality)
+# Without it, RAG falls back to TF-IDF bag-of-words (no extra deps needed)
+# Install: pip install sentence-transformers
+# sentence-transformers>=2.7.0

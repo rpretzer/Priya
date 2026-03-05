@@ -159,6 +159,7 @@ _sessions_lock = asyncio.Lock()
 # Injected by create_app() before the server starts
 _backend: "AgentBackend"
 _memory: CoachMemory
+_context_sources: list = []
 
 
 async def _get_or_create_engine(session_id: str) -> CoachEngine:
@@ -170,6 +171,7 @@ async def _get_or_create_engine(session_id: str) -> CoachEngine:
             _sessions[session_id] = CoachEngine(
                 backend=_backend,
                 memory_context=memory_context,
+                context_sources=_context_sources or None,
             )
         return _sessions[session_id]
 
@@ -408,15 +410,21 @@ def create_app(
     backend: "AgentBackend",
     demo_dir: str | None = None,
     memory_path: str | None = None,
+    context_sources: list | None = None,
 ) -> Starlette:
     """Build and return the Starlette application.
 
     Separated from run_server() so tests can instantiate the app without
     starting a live server.
+
+    Args:
+        context_sources: Optional list of ContextSource instances for Phase 2 RAG.
+            If provided, they are registered with each CoachEngine session.
     """
-    global _backend, _memory
+    global _backend, _memory, _context_sources
     _backend = backend
     _memory = CoachMemory(db_path=memory_path)
+    _context_sources = context_sources or []
 
     v1_routes = [
         Route("/coach",            chat,         methods=["POST"]),

@@ -19,11 +19,61 @@ from __future__ import annotations
 
 import os
 import re
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Generator
 
 from pipeline.backends.base import AgentBackend, AgentResult
+
+
+# ===========================================================================
+# ContextChunk and ContextSource — Phase 2 RAG integration types
+# ===========================================================================
+
+@dataclass
+class ContextChunk:
+    """A retrieved context chunk from the RAG system.
+
+    Returned by ContextSource.get_context() and injected into the system
+    prompt by ContextAssembler as an additive layer alongside the static
+    file-driven DomainContext baseline.
+    """
+    content: str
+    source: str       # file path or URL of origin
+    score: float      # similarity score [0.0, 1.0]
+    metadata: dict = field(default_factory=dict)
+
+
+class ContextSource(ABC):
+    """Abstract base for Phase 2 RAG context providers.
+
+    Implementations (e.g. ContextRetriever) are registered with
+    ContextAssembler at startup. During prompt assembly, ContextAssembler
+    calls get_context() for each registered source and appends the results
+    as a sub-layer within the domain context layer (after static DomainContext).
+
+    Contract (agents.md Contract 2):
+    - Must not modify any existing ContextAssembler layer
+    - Must degrade gracefully (return [] on failure)
+    - Must respect the token budget enforced by ContextAssembler
+    - Static DomainContext always loads first; this is additive only
+    """
+
+    @abstractmethod
+    def get_context(self, conversation_state: dict) -> list[ContextChunk]:
+        """Return relevant context chunks for the current conversation.
+
+        Args:
+            conversation_state: dict with keys:
+                "messages"       — recent conversation messages (list[dict])
+                "missing_fields" — fields still needed (list[str])
+                "turn_count"     — current turn number (int)
+
+        Returns:
+            List of ContextChunk, sorted by relevance score descending.
+            Return [] if nothing relevant or on any error.
+        """
 
 
 # ===========================================================================
@@ -584,8 +634,16 @@ class ContextAssembler:
     6. Memory context from CoachMemory
     """
 
-    def __init__(self, domain_context: DomainContext | None = None):
+    # Maximum chars to inject from RAG before truncating (~2000 tokens)
+    RAG_BUDGET_CHARS: int = 8000
+
+    def __init__(
+        self,
+        domain_context: DomainContext | None = None,
+        context_sources: list[ContextSource] | None = None,
+    ):
         self._domain = domain_context or DomainContext()
+        self._context_sources: list[ContextSource] = context_sources or []
 
     def build(
         self,
@@ -593,6 +651,7 @@ class ContextAssembler:
         turn_count: int = 0,
         memory_context: str = "",
         extra_overlay: str = "",
+        conversation_state: dict | None = None,
     ) -> str:
         """Assemble and return the full system prompt string.
 
@@ -601,6 +660,9 @@ class ContextAssembler:
             turn_count: Number of turns so far (drives phase-awareness).
             memory_context: Text from CoachMemory for this session.
             extra_overlay: Any additional instruction text to append.
+            conversation_state: Optional dict with "messages", "missing_fields",
+                "turn_count" keys for Phase 2 RAG retrieval. If None, RAG
+                sources are not queried (graceful degradation).
 
         Returns:
             Complete system prompt string ready for the LLM.
@@ -610,10 +672,19 @@ class ContextAssembler:
         # Layer 1: Persona and protocol
         sections.append(_PERSONA_BLOCK)
 
-        # Layer 2: Domain context
+        # Layer 2: Domain context (static file-driven baseline — always active)
         domain_text = self._domain.load()
         if domain_text:
             sections.append("# Domain Knowledge\n\n" + domain_text)
+
+        # Layer 2b: RAG-retrieved context (Phase 2, additive only)
+        # Static DomainContext always loads first and is never skipped.
+        # If no context_sources are registered or retrieval fails, this
+        # layer is simply absent — no change to coaching behaviour.
+        if self._context_sources and conversation_state is not None:
+            rag_text = self._build_rag_layer(conversation_state, domain_text or "")
+            if rag_text:
+                sections.append("# Additional Retrieved Context\n\n" + rag_text)
 
         # Layer 3: Artifact schemas
         sections.append(_ARTIFACT_SCHEMAS_BLOCK)
@@ -635,6 +706,46 @@ class ContextAssembler:
             sections.append(extra_overlay)
 
         return "\n\n---\n\n".join(sections)
+
+    def _build_rag_layer(self, conversation_state: dict, static_context: str) -> str:
+        """Collect RAG chunks from all registered ContextSources.
+
+        Applies deduplication against static_context and enforces the
+        RAG_BUDGET_CHARS limit. Returns an empty string if nothing useful
+        is retrieved.
+        """
+        all_chunks: list[ContextChunk] = []
+        for source in self._context_sources:
+            try:
+                chunks = source.get_context(conversation_state)
+                all_chunks.extend(chunks)
+            except Exception:
+                pass  # ContextSource must degrade gracefully; log inside source
+
+        if not all_chunks:
+            return ""
+
+        # Sort by score desc, apply budget
+        all_chunks.sort(key=lambda c: c.score, reverse=True)
+        lines: list[str] = []
+        total_chars = 0
+
+        for chunk in all_chunks:
+            if total_chars >= self.RAG_BUDGET_CHARS:
+                break
+            # Attribution header
+            source_name = chunk.source.split("/")[-1] if "/" in chunk.source else chunk.source
+            section = chunk.metadata.get("section_header", "")
+            if section:
+                attr = f"[Source: {source_name} — {section}]"
+            else:
+                attr = f"[Source: {source_name}]"
+
+            entry = f"{attr}\n{chunk.content}"
+            lines.append(entry)
+            total_chars += len(entry)
+
+        return "\n\n".join(lines)
 
     @staticmethod
     def _build_progress_overlay(progress: ProgressTracker, turn_count: int) -> str:
@@ -724,9 +835,13 @@ class CoachEngine:
         backend: AgentBackend,
         domain_context: DomainContext | None = None,
         memory_context: str = "",
+        context_sources: list[ContextSource] | None = None,
     ):
         self._backend = backend
-        self._assembler = ContextAssembler(domain_context=domain_context)
+        self._assembler = ContextAssembler(
+            domain_context=domain_context,
+            context_sources=context_sources,
+        )
         self._tracker = ProgressTracker()
         self._detector = SignalDetector()
         self._memory_context = memory_context
@@ -779,11 +894,16 @@ class CoachEngine:
         # Update completeness scoring
         self._tracker.update(self._messages)
 
-        # Build system prompt
+        # Build system prompt (include conversation_state for Phase 2 RAG)
         system_prompt = self._assembler.build(
             progress=self._tracker,
             turn_count=self._turn_count,
             memory_context=self._memory_context,
+            conversation_state={
+                "messages": self._messages[-6:],  # last 3 turns
+                "missing_fields": self._tracker.missing_fields(),
+                "turn_count": self._turn_count,
+            },
         )
 
         # Stream from backend

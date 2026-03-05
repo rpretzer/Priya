@@ -226,3 +226,61 @@ Key decisions:
 - pipeline/coach/model_server.py (new)
 - pipeline/coach/backend_validator.py (new)
 - pipeline/coach/__main__.py (updated)
+
+> `[2026-03-05T12:04:24Z]` **Write** → `pipeline/intake/domain-context/mwt-product-context.md`
+> `[2026-03-05T12:06:47Z]` **Write** → `pipeline/intake/domain-context/platform-architecture.md`
+> `[2026-03-05T12:07:29Z]` **Write** → `pipeline/coach/rag/__init__.py`
+> `[2026-03-05T12:08:13Z]` **Write** → `pipeline/coach/rag/embedding_provider.py`
+> `[2026-03-05T12:08:57Z]` **Write** → `pipeline/coach/rag/vector_store.py`
+> `[2026-03-05T12:09:38Z]` **Write** → `pipeline/coach/rag/document_indexer.py`
+> `[2026-03-05T12:10:15Z]` **Write** → `pipeline/coach/rag/context_retriever.py`
+> `[2026-03-05T12:10:39Z]` **Edit** → `pipeline/coach/engine.py`
+> `[2026-03-05T12:10:45Z]` **Edit** → `pipeline/coach/engine.py`
+> `[2026-03-05T12:11:04Z]` **Edit** → `pipeline/coach/engine.py`
+> `[2026-03-05T12:11:13Z]` **Edit** → `pipeline/coach/engine.py`
+> `[2026-03-05T12:11:20Z]` **Edit** → `pipeline/coach/engine.py`
+> `[2026-03-05T12:11:25Z]` **Edit** → `pipeline/coach/engine.py`
+> `[2026-03-05T12:11:42Z]` **Edit** → `pipeline/coach/__main__.py`
+> `[2026-03-05T12:12:05Z]` **Edit** → `pipeline/coach/__main__.py`
+> `[2026-03-05T12:12:27Z]` **Edit** → `pipeline/coach/server.py`
+> `[2026-03-05T12:12:30Z]` **Edit** → `pipeline/coach/server.py`
+> `[2026-03-05T12:12:34Z]` **Edit** → `pipeline/coach/server.py`
+> `[2026-03-05T12:13:07Z]` **Write** → `scripts/build_rag_index.py`
+> `[2026-03-05T12:15:15Z]` **Write** → `pipeline/coach/rag/test_rag.py`
+> `[2026-03-05T12:15:57Z]` **Edit** → `requirements.txt`## Session 004 — 2026-03-05
+
+### Human Request
+> Execute Phase 2
+
+### Chain of Thought
+Phase 2 adds RAG-augmented domain context without touching Priya's behavioral contract.
+
+Key decisions:
+- VectorStore: pure numpy (no FAISS) for Phase 2 scale (~100-500 chunks). FAISS is a trivial swap later via the VectorStore abstract interface.
+- EmbeddingProvider: SentenceTransformer primary, LlamaCppEmbeddingProvider secondary, TFIDFProvider pure-python fallback. Defaults to best available at runtime.
+- ContextSource/ContextChunk defined in engine.py (stable core) so the RAG package imports from engine rather than vice versa — keeps dependency graph clean.
+- ContextAssembler change: backward-compatible — new params (context_sources, conversation_state) default to None/[]. All 52 heuristic hardening tests pass unchanged.
+- CoachEngine change: additive only — new context_sources param, conversation_state passed to assembler.build(). No behavioral change when context_sources=[].
+- RAG disabled by default (--rag-index flag opt-in). Coaching works without RAG exactly as before.
+
+### Steps
+1. Created pipeline/intake/domain-context/mwt-product-context.md (MWT org + strategic context)
+2. Created pipeline/intake/domain-context/platform-architecture.md (deep platform/tech reference)
+3. Built pipeline/coach/rag/ package: embedding_provider.py, vector_store.py, document_indexer.py, context_retriever.py, __init__.py
+4. Modified engine.py: added ContextChunk dataclass, ContextSource ABC, wired ContextAssembler._build_rag_layer(), updated CoachEngine.__init__ to accept context_sources
+5. Modified server.py: added context_sources param to create_app(), forwarded to CoachEngine sessions
+6. Modified __main__.py: added --rag-index, --rag-embedding, --rag-domain-dir flags + _build_rag_context_sources()
+7. Created scripts/build_rag_index.py (standalone index builder)
+8. Created pipeline/coach/rag/test_rag.py (32 tests: chunking, search, dedup, budget, integration)
+9. Updated requirements.txt: added numpy>=1.26.0, sentence-transformers as optional comment
+10. All 52 heuristic tests pass. 32 RAG tests pass. 84 total.
+
+### Outputs
+- pipeline/intake/domain-context/mwt-product-context.md (new)
+- pipeline/intake/domain-context/platform-architecture.md (new)
+- pipeline/coach/rag/ package (new, 5 files)
+- scripts/build_rag_index.py (new)
+- pipeline/coach/engine.py (updated — ContextChunk, ContextSource, RAG layer)
+- pipeline/coach/server.py (updated — context_sources param)
+- pipeline/coach/__main__.py (updated — RAG CLI flags)
+- requirements.txt (updated — numpy)
