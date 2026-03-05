@@ -25,6 +25,33 @@ import time
 from .base import AgentBackend, AgentResult
 
 
+def _retry(fn, *, max_attempts: int = 3, base_delay: float = 1.0):
+    """Call fn(), retrying on throttling and transient errors with exponential backoff."""
+    _RETRYABLE_CODES = {"ThrottlingException", "ServiceUnavailableException", "RequestTimeout"}
+    last_exc: Exception | None = None
+    delay = base_delay
+    for attempt in range(max_attempts):
+        try:
+            return fn()
+        except Exception as exc:
+            # Retry on boto3 throttling / transient errors; re-raise everything else
+            code = getattr(getattr(exc, "response", None), "Error", {}).get("Code", "") \
+                if hasattr(exc, "response") else ""
+            if not code:
+                try:
+                    code = exc.response["Error"]["Code"]  # type: ignore[index]
+                except Exception:
+                    code = ""
+            if code in _RETRYABLE_CODES or isinstance(exc, (ConnectionError, TimeoutError)):
+                last_exc = exc
+                if attempt < max_attempts - 1:
+                    time.sleep(delay)
+                    delay *= 2
+            else:
+                raise
+    raise last_exc  # type: ignore[misc]
+
+
 class BedrockBackend(AgentBackend):
     """AWS Bedrock backend using the Converse API.
 
@@ -136,7 +163,7 @@ class BedrockBackend(AgentBackend):
             if system_blocks:
                 kwargs["system"] = system_blocks
 
-            response = client.converse(**kwargs)
+            response = _retry(lambda: client.converse(**kwargs))
             duration_ms = int((time.monotonic() - start) * 1000)
             content = response["output"]["message"]["content"][0]["text"]
             usage = response.get("usage", {})

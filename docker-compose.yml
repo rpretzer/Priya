@@ -1,0 +1,59 @@
+services:
+
+  # ── Hoopla Coach server ───────────────────────────────────────────────────
+  coach:
+    build: .
+    image: hoopla-coach:latest
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3456}:3456"
+    env_file:
+      - .env
+    environment:
+      - BACKEND=${BACKEND:-ollama}
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - MEMORY_PATH=/data/memory.db
+      - WORKERS=${WORKERS:-2}
+    volumes:
+      - coach-data:/data
+      # Mount demo UI if you have one:
+      # - ./demo:/app/demo:ro
+    depends_on:
+      ollama:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:3456/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # ── Ollama LLM server ─────────────────────────────────────────────────────
+  # Remove this service if you use a different backend (bedrock, llamacpp, etc.)
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama-models:/root/.ollama
+    # Expose to host for debugging — remove in production
+    ports:
+      - "11434:11434"
+    healthcheck:
+      test: ["CMD", "sh", "-c", "curl -sf http://localhost:11434/api/tags || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    # GPU passthrough — uncomment if using NVIDIA GPU
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+volumes:
+  coach-data:
+  ollama-models:

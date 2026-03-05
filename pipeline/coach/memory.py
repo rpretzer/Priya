@@ -63,6 +63,31 @@ AFTER DELETE ON crystal_items BEGIN
     INSERT INTO crystal_items_fts(crystal_items_fts, rowid, text, kind)
     VALUES ('delete', old.rowid, old.text, old.kind);
 END;
+
+-- Conversation turns: every user/assistant message persisted for crash recovery
+CREATE TABLE IF NOT EXISTS conversations (
+    id          TEXT PRIMARY KEY,
+    session_id  TEXT NOT NULL,
+    role        TEXT NOT NULL,
+    content     TEXT NOT NULL,
+    turn_index  INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS conversations_session_idx
+    ON conversations(session_id, turn_index);
+
+-- Artifacts: generated business-case.md / epics.md / stories-draft.md
+CREATE TABLE IF NOT EXISTS artifacts (
+    id              TEXT PRIMARY KEY,
+    session_id      TEXT NOT NULL,
+    artifact_type   TEXT NOT NULL,
+    content         TEXT NOT NULL,
+    created_at      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS artifacts_session_idx
+    ON artifacts(session_id, created_at);
 """
 
 
@@ -169,6 +194,89 @@ class CoachMemory:
         with self._connect() as conn:
             conn.execute("DELETE FROM crystal_items")
             conn.execute("DELETE FROM sessions")
+
+    # ------------------------------------------------------------------
+    # Conversation persistence
+    # ------------------------------------------------------------------
+
+    def save_turn(
+        self,
+        session_id: str,
+        role: str,
+        content: str,
+        turn_index: int = 0,
+    ) -> None:
+        """Persist a single conversation turn.
+
+        Creates a stub session row if one doesn't exist yet so the FK is
+        satisfied before Crystallizer runs at session end.
+        """
+        now = _now()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO sessions(id, created_at, summary) VALUES (?, ?, '')",
+                (session_id, now),
+            )
+            conn.execute(
+                """INSERT INTO conversations(id, session_id, role, content, turn_index, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (str(uuid.uuid4()), session_id, role, content, turn_index, now),
+            )
+
+    def get_conversation(self, session_id: str) -> list[dict]:
+        """Return all turns for a session in order."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT role, content, turn_index, created_at
+                   FROM conversations
+                   WHERE session_id = ?
+                   ORDER BY turn_index, created_at""",
+                (session_id,),
+            ).fetchall()
+        return [
+            {"role": r[0], "content": r[1], "turn_index": r[2], "created_at": r[3]}
+            for r in rows
+        ]
+
+    # ------------------------------------------------------------------
+    # Artifact persistence
+    # ------------------------------------------------------------------
+
+    def save_artifact(
+        self,
+        session_id: str,
+        artifact_type: str,
+        content: str,
+    ) -> str:
+        """Persist a generated artifact. Returns the artifact ID."""
+        now = _now()
+        artifact_id = str(uuid.uuid4())
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO sessions(id, created_at, summary) VALUES (?, ?, '')",
+                (session_id, now),
+            )
+            conn.execute(
+                """INSERT INTO artifacts(id, session_id, artifact_type, content, created_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (artifact_id, session_id, artifact_type, content, now),
+            )
+        return artifact_id
+
+    def get_artifacts(self, session_id: str) -> list[dict]:
+        """Return all artifacts for a session, newest first."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT id, artifact_type, content, created_at
+                   FROM artifacts
+                   WHERE session_id = ?
+                   ORDER BY created_at DESC""",
+                (session_id,),
+            ).fetchall()
+        return [
+            {"id": r[0], "artifact_type": r[1], "content": r[2], "created_at": r[3]}
+            for r in rows
+        ]
 
     # ------------------------------------------------------------------
     # Internal helpers

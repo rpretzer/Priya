@@ -4,35 +4,35 @@
 // app.js — Priya / Hoopla Coach demo frontend
 //
 // API contract:
-//   POST /api/coach        body: {message, session_id, attachments}
-//                          response: NDJSON stream of {type,text} objects
-//   GET  /api/coach/commands → {commands:[{command,description,usage}]}
-//   GET  /api/coach/status   → {completeness, ready_for_artifacts, missing:[]}
-//   POST /api/coach/reset    body: {session_id}
-//   GET  /api/health         → {backend, ...}
+//   POST /api/v1/coach        body: {message, session_token, attachments}
+//                             response headers: X-Session-Token
+//                             response: NDJSON stream of {type,...} objects
+//   GET  /api/v1/coach/commands → {commands:[{command,description,usage}]}
+//   GET  /api/v1/coach/status?session_token= → {completeness, ready_for_artifacts, missing:[]}
+//   POST /api/v1/coach/reset  body: {session_token}
+//                             response: {status, session_token}
+//   GET  /health              → {backend, ...}
 // ============================================================
 
-// ---- Session ID (persisted across page loads) ----
-function getOrCreateSessionId() {
-  const KEY = 'priya_session_id';
-  let id = localStorage.getItem(KEY);
-  if (!id) {
-    // Generate a UUID-like string without crypto dependency
-    id = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-      const r = (Math.random() * 16) | 0;
-      return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
-    });
-    localStorage.setItem(KEY, id);
-  }
-  return id;
+// ---- Session token (server-minted, persisted across page loads) ----
+// Tokens are HMAC-signed by the server. We store whatever the server gives us.
+// On first visit (no stored token), we send null and the server mints a new one.
+const _SESSION_KEY = 'priya_session_token';
+
+function getSessionToken() {
+  return localStorage.getItem(_SESSION_KEY) || null;
 }
 
-function clearSessionId() {
-  localStorage.removeItem('priya_session_id');
+function setSessionToken(token) {
+  if (token) localStorage.setItem(_SESSION_KEY, token);
+}
+
+function clearSessionToken() {
+  localStorage.removeItem(_SESSION_KEY);
 }
 
 // ---- Module-level state ----
-let sessionId = getOrCreateSessionId();
+let sessionToken = getSessionToken(); // may be null on first visit
 let commands = [];          // slash-command list from /api/coach/commands
 let pendingFiles = [];      // attachments staged for the next send
 let isStreaming = false;    // true while an LLC response is in-flight
@@ -90,9 +90,12 @@ async function fetchCommands() {
 // ============================================================
 async function fetchStatus() {
   try {
-    const r = await fetch('/api/coach/status');
+    const params = sessionToken ? `?session_token=${encodeURIComponent(sessionToken)}` : '';
+    const r = await fetch(`/api/v1/coach/status${params}`);
     if (!r.ok) return;
     const d = await r.json();
+    // Server may return an updated token even on status calls
+    if (d.session_token) { sessionToken = d.session_token; setSessionToken(sessionToken); }
     renderStatus(d);
   } catch { /* non-fatal */ }
 }
@@ -341,13 +344,13 @@ async function submitMessage() {
 async function sendToCoach(text, attachments, bubbleId) {
   const body = {
     message: text,
-    session_id: sessionId,
+    session_token: sessionToken,
   };
   if (attachments.length) body.attachments = attachments;
 
   let resp;
   try {
-    resp = await fetch('/api/coach', {
+    resp = await fetch('/api/v1/coach', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -361,6 +364,10 @@ async function sendToCoach(text, attachments, bubbleId) {
     updateBubble(bubbleId, `Server error: ${resp.status} ${resp.statusText}`, false);
     return;
   }
+
+  // Capture server-minted session token from response headers
+  const newToken = resp.headers.get('X-Session-Token');
+  if (newToken) { sessionToken = newToken; setSessionToken(sessionToken); }
 
   // Parse NDJSON stream: each line is a complete JSON object
   const reader = resp.body.getReader();
@@ -399,7 +406,8 @@ async function sendToCoach(text, attachments, bubbleId) {
           updateBubble(bubbleId, fullText, false /* done */);
           fetchStatus(); // async — non-blocking
         } else if (event.type === 'error') {
-          updateBubble(bubbleId, `Error: ${escapeHtml(event.text || 'unknown error')}`, false);
+          const errId = event.error_id ? ` [${event.error_id}]` : '';
+          updateBubble(bubbleId, `Something went wrong${errId}. Please try again.`, false);
         }
       }
     }
@@ -527,16 +535,19 @@ function maybeScrollBottom() {
 // ============================================================
 async function resetSession() {
   try {
-    await fetch('/api/coach/reset', {
+    const r = await fetch('/api/v1/coach/reset', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: sessionId }),
+      body: JSON.stringify({ session_token: sessionToken }),
     });
+    if (r.ok) {
+      const d = await r.json();
+      if (d.session_token) { sessionToken = d.session_token; setSessionToken(sessionToken); }
+    }
   } catch { /* non-fatal if server is unreachable */ }
 
-  // Generate a fresh session ID
-  clearSessionId();
-  sessionId = getOrCreateSessionId();
+  // Clear stored token — server already gave us a new one above
+  if (!sessionToken) { clearSessionToken(); sessionToken = null; }
 
   // Clear local state
   pendingFiles = [];

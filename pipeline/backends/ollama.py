@@ -19,6 +19,25 @@ import urllib.request
 from .base import AgentBackend, AgentResult
 
 
+def _retry(fn, *, max_attempts: int = 3, base_delay: float = 1.0):
+    """Call fn(), retrying up to max_attempts times with exponential backoff."""
+    import urllib.error
+    retryable = (urllib.error.URLError, ConnectionError, TimeoutError)
+    last_exc: Exception | None = None
+    delay = base_delay
+    for attempt in range(max_attempts):
+        try:
+            return fn()
+        except retryable as exc:
+            last_exc = exc
+            if attempt < max_attempts - 1:
+                time.sleep(delay)
+                delay *= 2
+        except Exception:
+            raise  # non-retryable (e.g. JSON parse errors) — surface immediately
+    raise last_exc  # type: ignore[misc]
+
+
 class OllamaBackend(AgentBackend):
     """Backend for a locally-running Ollama server.
 
@@ -104,8 +123,12 @@ class OllamaBackend(AgentBackend):
         start = time.monotonic()
         try:
             req = self._post("/api/chat", body)
-            with urllib.request.urlopen(req, timeout=300) as resp:
-                data = json.loads(resp.read())
+
+            def _do_request():
+                with urllib.request.urlopen(req, timeout=300) as resp:
+                    return json.loads(resp.read())
+
+            data = _retry(_do_request)
             duration_ms = int((time.monotonic() - start) * 1000)
             content = data.get("message", {}).get("content", "")
             return AgentResult(
