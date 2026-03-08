@@ -284,3 +284,28 @@ Key decisions:
 - pipeline/coach/server.py (updated — context_sources param)
 - pipeline/coach/__main__.py (updated — RAG CLI flags)
 - requirements.txt (updated — numpy)
+## Session 005 — 2026-03-08
+
+### Human Request
+> Analyze pipeline-activity-log.md from accelerate-poc-test fresh run (waves 0-4 partial). Identify patterns that signal pipeline improvements.
+### Chain of Thought
+Analyzed pipeline-activity-log.md from accelerate-poc-test fresh run (waves 0-4 partial, 5-7 never started).
+
+Key findings:
+- CRITICAL: llama-server crashed during wave 4 quality_gate (HTTP 500 → Connection refused), blocking 73% of all units
+- Quality gate hold rate rises with wave depth: 0% (waves 0-1), 38% (wave 2), 24% (wave 3)
+- KMP layer has highest GATE_FAIL rate at ~35% vs 14-18% for other layers
+- All 21 held units have verdict: unknown — no gate explanation recorded
+- File path routing gaps: test dirs unknown, root-level .kt auto-corrected, typo in package name (biiometric)
+- No retry mechanism (0 retry events despite 500 errors)
+- No inter-wave health check — runner started wave 5 against a dead server
+- Implementation/testing durations suspiciously uniform (~70s), suggesting timeouts not real processing
+- human_review stage is ceremonial (skip + auto-advance could merge)
+
+### Steps
+1. Parsed wave summary, stage transitions, wave logs, and unit state table
+2. Identified 8 distinct patterns with evidence chains
+3. Wrote docs/pipeline-pattern-analysis-2026-03-08.md with priority-ordered recommendations
+
+### Outputs
+- docs/pipeline-pattern-analysis-2026-03-08.md
