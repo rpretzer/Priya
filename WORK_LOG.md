@@ -309,3 +309,23 @@ Key findings:
 
 ### Outputs
 - docs/pipeline-pattern-analysis-2026-03-08.md
+### Human Request
+> Concerned that the monolithic requirement → compiled spec → context → test spec → coding agent pipeline provides human observability at the cost of agent flexibility. Asked for a concrete proposal to restructure around spec-as-acceptance-criteria.
+
+### Chain of Thought
+- Analyzed pipeline-pattern-analysis-2026-03-08.md: 78/293 units completed, 21 genuine quality failures
+- Patterns 3 (path routing), 4 (serial execution), and 6 (ceremonial human_review) are directly caused by spec-mediated indirection
+- Pattern 3 is the clearest case: agent misplaces files because it reads a spec ABOUT the codebase instead of the codebase itself
+- Key insight: the spec should define 'done' (acceptance criteria), not prescribe 'how' (work instructions)
+- Agent gets codebase access + acceptance criteria instead of compiled spec + context + test spec
+- Migration path is incremental: Phase B (read access for cross-reference) alone fixes Pattern 3
+- Priya's coaching core is unchanged — this is purely a downstream pipeline architecture change
+
+### Steps
+1. Explored pipeline-pattern-analysis-2026-03-08.md for failure patterns
+2. Read agents.md for current topology and contracts
+3. Read COOKBOOK.md for spec funnel architecture
+4. Drafted proposal-spec-as-acceptance-criteria.md with current/proposed comparison, migration path, risk analysis
+
+### Outputs
+- docs/proposal-spec-as-acceptance-criteria.md
