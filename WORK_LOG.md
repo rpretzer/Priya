@@ -284,3 +284,28 @@ Key decisions:
 - pipeline/coach/server.py (updated — context_sources param)
 - pipeline/coach/__main__.py (updated — RAG CLI flags)
 - requirements.txt (updated — numpy)
+
+> `[2026-03-11T18:53:04Z]` **Write** → `CLAUDE.md`
+> `[2026-03-11T18:56:48Z]` **Write** → `agents.md`
+> `[2026-03-11T19:33:07Z]` **Edit** → `pipeline/coach/engine.py`
+> `[2026-03-11T19:33:15Z]` **Edit** → `pipeline/coach/engine.py`
+> `[2026-03-11T19:33:27Z]` **Edit** → `pipeline/coach/engine.py`
+> `[2026-03-11T19:33:32Z]` **Edit** → `pipeline/coach/engine.py`
+> `[2026-03-11T19:33:39Z]` **Edit** → `pipeline/coach/engine.py`
+> `[2026-03-11T19:33:45Z]` **Edit** → `pipeline/coach/engine.py`
+> `[2026-03-11T19:33:52Z]` **Edit** → `pipeline/coach/engine.py`
+> `[2026-03-11T19:33:57Z]` **Edit** → `pipeline/coach/engine.py`
+> `[2026-03-11T19:34:11Z]` **Edit** → `pipeline/coach/engine.py`
+> `[2026-03-11T19:34:19Z]` **Edit** → `pipeline/coach/engine.py`
+> `[2026-03-11T19:34:33Z]` **Edit** → `pipeline/coach/engine.py`
+> `[2026-03-11T19:34:55Z]` **Edit** → `pipeline/methodology/personas/coach-priya.md`
+> `[2026-03-11T19:35:02Z]` **Edit** → `pipeline/methodology/personas/coach-priya.md`
+> `[2026-03-11T19:35:15Z]` **Edit** → `pipeline/methodology/personas/coach-priya.md`
+> `[2026-03-11T19:35:21Z]` **Edit** → `pipeline/methodology/personas/coach-priya.md`
+> `[2026-03-11T19:36:02Z]` **Write** → `pipeline/intake/domain-context/patron-privacy.md`
+> `[2026-03-11T19:36:21Z]` **Edit** → `pipeline/coach/test_hardening.py`
+> `[2026-03-11T19:36:32Z]` **Edit** → `pipeline/coach/test_hardening.py`
+> `[2026-03-11T19:37:07Z]` **Edit** → `pipeline/coach/test_hardening.py`
+> `[2026-03-11T19:37:36Z]` **Edit** → `pipeline/coach/test_hardening.py`
+> `[2026-03-11T19:39:16Z]` **Edit** → `pipeline/coach/engine.py`
+> `[2026-03-11T19:39:22Z]` **Edit** → `pipeline/coach/engine.py`

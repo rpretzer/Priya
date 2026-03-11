@@ -153,6 +153,26 @@ _QUANTIFICATION_PATTERN = re.compile(
     r"\b(\d[\d,\.]*\s*(%|users|patrons|sessions|tickets|dollars|\$|hours|days|weeks))\b", re.I
 )
 
+# Patron data exposure — triggers the privacy gate
+_PATRON_DATA_PATTERN = re.compile(
+    r"\b(patron (data|record\w*|history|activity|borrow\w*|reading)|"
+    r"user (data|history|activity|record\w*)|"
+    r"reading history|borrow\w* history|checkout history|"
+    r"personal (data|information) of (patrons|users)|"
+    r"patron.level|individual patron|patron identifier|patron id|"
+    r"kids mode|children|child(ren)?|minor|under.?13)\b",
+    re.I,
+)
+
+# Privacy impact discussion — satisfies the privacy gate
+_PRIVACY_IMPACT_PATTERN = re.compile(
+    r"\b(privacy impact|data minimization|anonymi(ze|s)(d|ation)|aggregate(d)?|"
+    r"retention policy|data retention|not retain|won.?t retain|"
+    r"coppa|privacy review|privacy risk|personally identifiable|PII|"
+    r"no patron.level|patron.level data (is|will be) (excluded|not|anonymi))\b",
+    re.I,
+)
+
 
 @dataclass
 class FieldScore:
@@ -175,6 +195,8 @@ class ProgressTracker:
         self._scores: dict[str, FieldScore] = {
             f: FieldScore(field=f) for f in _SCORED_FIELDS
         }
+        self._privacy_gate_required: bool = False
+        self._privacy_impact_met: bool = False
 
     # ------------------------------------------------------------------
     # Public API
@@ -188,9 +210,16 @@ class ProgressTracker:
         """
         # Reset
         self._scores = {f: FieldScore(field=f) for f in _SCORED_FIELDS}
+        self._privacy_gate_required = False
+        self._privacy_impact_met = False
 
         # Collect all user text
         user_text = self._collect_user_text(messages)
+
+        # Privacy gate: required when patron data or Kids Mode is mentioned
+        if _PATRON_DATA_PATTERN.search(user_text):
+            self._privacy_gate_required = True
+            self._privacy_impact_met = bool(_PRIVACY_IMPACT_PATTERN.search(user_text))
 
         for fname, patterns in _FIELD_PATTERNS.items():
             snippets = []
@@ -245,19 +274,51 @@ class ProgressTracker:
         return earned / total_weight
 
     def is_ready_for_artifacts(self) -> bool:
-        """Return True if completeness meets the artifact gate threshold."""
-        return self.completeness() >= _ARTIFACT_GATE_THRESHOLD
+        """Return True if completeness meets the artifact gate threshold.
+
+        Also enforces the privacy gate: if patron data or Kids Mode is
+        detected in the conversation, a Privacy Impact discussion must
+        be present before artifacts can be generated.
+        """
+        if self.completeness() < _ARTIFACT_GATE_THRESHOLD:
+            return False
+        if self._privacy_gate_required and not self._privacy_impact_met:
+            return False
+        return True
+
+    @property
+    def privacy_gate_required(self) -> bool:
+        """True if this conversation requires a Privacy Impact section."""
+        return self._privacy_gate_required
+
+    @property
+    def privacy_impact_met(self) -> bool:
+        """True if privacy impact has been sufficiently addressed."""
+        return self._privacy_impact_met
 
     def missing_fields(self) -> list[str]:
-        """Return list of field names that are MISSING or WEAK."""
-        return [
+        """Return list of field names that are MISSING or WEAK.
+
+        Includes 'privacy_impact' if the privacy gate is required but
+        has not yet been satisfied.
+        """
+        missing = [
             f for f, s in self._scores.items()
             if s.status in (FieldStatus.MISSING, FieldStatus.WEAK)
         ]
+        if self._privacy_gate_required and not self._privacy_impact_met:
+            missing.append("privacy_impact")
+        return missing
 
     def status_report(self) -> dict[str, str]:
-        """Return a dict of field → status string for display."""
-        return {f: s.status.value for f, s in self._scores.items()}
+        """Return a dict of field → status string for display.
+
+        Includes 'privacy_impact' if the privacy gate is active.
+        """
+        report = {f: s.status.value for f, s in self._scores.items()}
+        if self._privacy_gate_required:
+            report["privacy_impact"] = "adequate" if self._privacy_impact_met else "missing"
+        return report
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -293,6 +354,7 @@ class SignalType(Enum):
     SCOPE_CREEP = "scope_creep"
     MISSING_ROLLOUT = "missing_rollout"
     COPPA_MINORS = "coppa_minors"
+    PATRON_DATA_EXPOSURE = "patron_data_exposure"
     # Strong signals (can skip exploratory phase)
     QUANTIFIED_PROBLEM = "quantified_problem"
     HYPOTHESIS_STATED = "hypothesis_stated"
@@ -313,7 +375,17 @@ _WEAK_SIGNAL_PATTERNS: list[tuple[SignalType, re.Pattern]] = [
     (SignalType.VAGUE_IMPACT,
      re.compile(r"\b(big impact|huge|massive|significant|greatly|substantially)\b(?!.{0,40}\d)", re.I)),
     (SignalType.COPPA_MINORS,
-     re.compile(r"\b(child(ren)?|minor|kid|teen|juvenile|under.?13|under.?18)\b", re.I)),
+     re.compile(r"\b(child(ren)?|minor|kids?|teen|juvenile|under.?13|under.?18)\b", re.I)),
+    (SignalType.PATRON_DATA_EXPOSURE,
+     re.compile(
+         r"\b(patron (data|record\w*|history|activity|borrow\w*|reading)|"
+         r"user (data|history|activity|record\w*)|"
+         r"reading history|borrow\w* history|checkout history|"
+         r"personal (data|information) of (patrons|users)|"
+         r"patron.level|individual patron|patron identifier|patron id|"
+         r"kids mode)\b",
+         re.I,
+     )),
     (SignalType.SCOPE_CREEP,
      re.compile(r"\b(also|and also|while we're at it|while we are at it|oh and|one more thing)\b", re.I)),
     (SignalType.MISSING_ROLLOUT,
@@ -523,12 +595,26 @@ ideas into rigorous business cases, epics, and user stories.
 - Sarcastic users: substance-focused, no mirroring
 - Enthusiastic users: channel energy into specifics
 
+## Error Correction
+- If the user corrects a mistake you made: acknowledge the specific error ("I stated X. That was incorrect."), state the correction, do not apologize beyond that, continue.
+- If you realize your own error later: correct proactively. Name what was said and what is correct.
+- If the error affected a generated artifact, say so and instruct the user to re-run /generate.
+- Never double-down. Never hedge a correction with "but" or "however."
+
+## Patron Privacy (Non-Negotiable)
+- Library patron borrowing history, reading habits, and content interactions are private under the library social contract.
+- When a feature touches patron data or Kids Mode, require the user to address privacy impact before artifact generation.
+- Do not request, store, repeat, or reason about individual patron-level records.
+- Kids Mode features are COPPA-sensitive: flag that data collection must be minimized.
+- Push back on features that assume patron-level data access without explicit justification.
+
 ## Prohibited
 - Compliments ("Great question!", "I love that idea", etc.)
 - Code generation of any kind
 - Fabricated numbers or invented evidence
 - Emotional labor or companionship language
 - Re-asking questions already asked in this session
+- Retaining, requesting, or reasoning about individual patron records
 """.strip()
 
 _ARTIFACT_SCHEMAS_BLOCK = """
@@ -567,6 +653,14 @@ no commentary, no caveats inside artifact output.
 
 ## Platform
 [Which platforms / clients are affected]
+
+## Privacy Impact
+[Required if feature touches patron data, user history, or Kids Mode. Omit only if no patron data is involved.]
+[Data types accessed or created]
+[Retention policy — how long, what form]
+[Anonymization/aggregation approach]
+[COPPA applicability (Kids Mode features)]
+[Legal exposure assessment]
 ```
 
 ## epics.md
@@ -764,6 +858,14 @@ class ContextAssembler:
             lines.append(
                 "Focus your next question on the highest-priority missing field. "
                 "Do not ask about fields already covered."
+            )
+
+        if progress.privacy_gate_required and not progress.privacy_impact_met:
+            lines.append(
+                "PRIVACY GATE ACTIVE: This conversation involves patron data or Kids Mode. "
+                "The user must address privacy impact (data minimization, retention, anonymization, "
+                "COPPA applicability) before artifacts can be generated. "
+                "Ask about privacy impact if not yet addressed."
             )
 
         if turn_count <= 2:

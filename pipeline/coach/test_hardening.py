@@ -32,6 +32,8 @@ from pipeline.coach.engine import (
     CoachEngine,
     ContextAssembler,
     DomainContext,
+    _PATRON_DATA_PATTERN,
+    _PRIVACY_IMPACT_PATTERN,
 )
 from pipeline.coach.crystallizer import Crystallizer
 
@@ -120,6 +122,41 @@ class TestSignalDetectorWeakSignals:
         weak_types = [s.signal_type for s in signals if s.is_weak]
         assert SignalType.VAGUE_IMPACT not in weak_types, (
             "Quantified impact should not trigger vague_impact"
+        )
+
+    def test_patron_data_exposure_detected(self, detector):
+        text = "We want to use patron borrowing history to recommend new titles."
+        signals = detector.analyze(text)
+        types = [s.signal_type for s in signals]
+        assert SignalType.PATRON_DATA_EXPOSURE in types, (
+            "Should flag patron data exposure when borrowing history is mentioned"
+        )
+
+    def test_patron_data_reading_history_detected(self, detector):
+        text = "We'll pull each patron's reading history to personalize their homepage."
+        signals = detector.analyze(text)
+        types = [s.signal_type for s in signals]
+        assert SignalType.PATRON_DATA_EXPOSURE in types, (
+            "Should flag patron data exposure for reading history access"
+        )
+
+    def test_patron_data_kids_mode_triggers_coppa(self, detector):
+        """Kids Mode mention should trigger both COPPA_MINORS and PATRON_DATA_EXPOSURE."""
+        text = "We want to add usage tracking to Kids Mode."
+        signals = detector.analyze(text)
+        types = [s.signal_type for s in signals]
+        # At minimum COPPA_MINORS should fire; patron data may also fire depending on text
+        assert SignalType.COPPA_MINORS in types or SignalType.PATRON_DATA_EXPOSURE in types, (
+            "Kids Mode usage tracking should trigger COPPA or patron data signal"
+        )
+
+    def test_no_patron_data_false_positive(self, detector):
+        """Aggregate metrics should NOT trigger patron data exposure."""
+        text = "We want to track aggregate borrow completion rates by platform."
+        signals = detector.analyze(text)
+        types = [s.signal_type for s in signals]
+        assert SignalType.PATRON_DATA_EXPOSURE not in types, (
+            "Aggregate metrics should not trigger patron_data_exposure"
         )
 
     def test_has_weak_signals_true(self, detector):
@@ -261,6 +298,205 @@ class TestProgressTrackerScoring:
         tracker.update(msgs)
         # problem and evidence should be elevated due to quantification
         assert tracker._scores["problem"].status in (FieldStatus.STRONG, FieldStatus.ADEQUATE)
+
+
+# ===========================================================================
+# 4b. ProgressTracker — privacy gate
+# ===========================================================================
+
+class TestProgressTrackerPrivacyGate:
+    """Validates privacy gate behavior: patron data features require
+    privacy impact discussion before artifact generation is permitted."""
+
+    def test_no_privacy_gate_for_neutral_input(self, tracker):
+        msgs = [_make_user_msg(
+            "We want to simplify the search results page for library admins."
+        )]
+        tracker.update(msgs)
+        assert tracker.privacy_gate_required is False
+
+    def test_privacy_gate_triggered_by_borrowing_history(self, tracker):
+        msgs = [_make_user_msg(
+            "We want to use patron borrowing history to drive title recommendations."
+        )]
+        tracker.update(msgs)
+        assert tracker.privacy_gate_required is True
+
+    def test_privacy_gate_triggered_by_reading_history(self, tracker):
+        msgs = [_make_user_msg(
+            "The feature will access each user's reading history to build a preference model."
+        )]
+        tracker.update(msgs)
+        assert tracker.privacy_gate_required is True
+
+    def test_privacy_gate_triggered_by_kids_mode(self, tracker):
+        msgs = [_make_user_msg(
+            "We're adding engagement tracking to Kids Mode for reporting."
+        )]
+        tracker.update(msgs)
+        assert tracker.privacy_gate_required is True
+
+    def test_privacy_gate_not_met_without_impact_discussion(self, tracker):
+        msgs = [_make_user_msg(
+            "We want to use patron borrowing history for personalization."
+        )]
+        tracker.update(msgs)
+        assert tracker.privacy_gate_required is True
+        assert tracker.privacy_impact_met is False
+
+    def test_privacy_gate_met_when_impact_discussed(self, tracker):
+        msgs = [_make_user_msg(
+            "We want to use patron borrowing history for personalization. "
+            "We'll anonymize the data and only retain aggregated preference signals. "
+            "No patron-level records will be stored. Retention policy is 30 days max."
+        )]
+        tracker.update(msgs)
+        assert tracker.privacy_gate_required is True
+        assert tracker.privacy_impact_met is True
+
+    def test_privacy_gate_met_by_coppa_discussion(self, tracker):
+        msgs = [_make_user_msg(
+            "This Kids Mode feature will not collect any personal data. "
+            "COPPA compliance is ensured by collecting only session state, "
+            "discarded at end of session. No retention."
+        )]
+        tracker.update(msgs)
+        assert tracker.privacy_gate_required is True
+        assert tracker.privacy_impact_met is True
+
+    def test_artifact_gate_blocked_by_privacy_gate(self, tracker):
+        """Even with high completeness, artifacts must be blocked if privacy gate is open."""
+        rich_text = (
+            "Problem: 35% of patrons abandon borrow flow. "
+            "Evidence: 50,000 sessions of analytics data. "
+            "Users: Public library patrons. "
+            "Impact: Recover 15% lost borrows. "
+            "Solution: Simplify the flow. "
+            "Metrics: Borrow completion rate. "
+            "Risks: KMP dependency. "
+            "Scope: Android Q1. "
+            "Platform: Android. "
+            "We'll use patron reading history to pre-populate recommendations."
+        )
+        tracker.update([_make_user_msg(rich_text)])
+        # Privacy gate should be active and not met
+        assert tracker.privacy_gate_required is True
+        assert tracker.privacy_impact_met is False
+        assert tracker.is_ready_for_artifacts() is False
+
+    def test_privacy_impact_in_missing_fields_when_gate_active(self, tracker):
+        msgs = [_make_user_msg(
+            "We'll use patron borrow history to surface recommendations."
+        )]
+        tracker.update(msgs)
+        assert "privacy_impact" in tracker.missing_fields()
+
+    def test_privacy_impact_in_status_report_when_gate_active(self, tracker):
+        msgs = [_make_user_msg(
+            "We'll use patron borrow history to surface recommendations."
+        )]
+        tracker.update(msgs)
+        report = tracker.status_report()
+        assert "privacy_impact" in report
+        assert report["privacy_impact"] == "missing"
+
+    def test_privacy_impact_adequate_in_status_when_met(self, tracker):
+        msgs = [_make_user_msg(
+            "We'll use patron borrow history. Data will be anonymized before use. "
+            "No retention of patron-level records. COPPA not applicable (adult feature)."
+        )]
+        tracker.update(msgs)
+        report = tracker.status_report()
+        assert "privacy_impact" in report
+        assert report["privacy_impact"] == "adequate"
+
+    def test_privacy_impact_not_in_status_when_gate_inactive(self, tracker):
+        msgs = [_make_user_msg(
+            "We want to add a sort-by-date filter to the admin dashboard."
+        )]
+        tracker.update(msgs)
+        report = tracker.status_report()
+        assert "privacy_impact" not in report
+
+
+# ===========================================================================
+# 4c. ProgressTracker — privacy gate patterns (unit tests, no LLM)
+# ===========================================================================
+
+class TestPrivacyPatterns:
+    """Validates the regex patterns used by the privacy gate."""
+
+    def test_patron_data_pattern_matches_borrowing_history(self):
+        assert _PATRON_DATA_PATTERN.search("patron borrowing history")
+
+    def test_patron_data_pattern_matches_reading_history(self):
+        assert _PATRON_DATA_PATTERN.search("user reading history")
+
+    def test_patron_data_pattern_matches_checkout_history(self):
+        assert _PATRON_DATA_PATTERN.search("checkout history")
+
+    def test_patron_data_pattern_matches_kids_mode(self):
+        assert _PATRON_DATA_PATTERN.search("kids mode feature")
+
+    def test_patron_data_pattern_matches_children(self):
+        assert _PATRON_DATA_PATTERN.search("for children under 13")
+
+    def test_patron_data_pattern_no_match_aggregate(self):
+        assert not _PATRON_DATA_PATTERN.search(
+            "track aggregate borrow completion rates by platform"
+        )
+
+    def test_privacy_impact_pattern_matches_anonymized(self):
+        assert _PRIVACY_IMPACT_PATTERN.search("data will be anonymized before use")
+
+    def test_privacy_impact_pattern_matches_retention_policy(self):
+        assert _PRIVACY_IMPACT_PATTERN.search("retention policy is 30 days")
+
+    def test_privacy_impact_pattern_matches_coppa(self):
+        assert _PRIVACY_IMPACT_PATTERN.search("COPPA compliance is ensured")
+
+    def test_privacy_impact_pattern_matches_aggregated(self):
+        assert _PRIVACY_IMPACT_PATTERN.search("only aggregated preference signals")
+
+    def test_privacy_impact_pattern_no_match_unrelated(self):
+        assert not _PRIVACY_IMPACT_PATTERN.search(
+            "we want to add a search filter to the admin dashboard"
+        )
+
+
+# ===========================================================================
+# 4d. Domain context — patron-privacy.md loads correctly
+# ===========================================================================
+
+class TestPatronPrivacyDomainContext:
+
+    def test_patron_privacy_file_loads(self):
+        ctx = DomainContext()
+        content = ctx.load()
+        assert "patron-privacy" in content.lower() or "patron privacy" in content.lower(), (
+            "patron-privacy.md should be loaded by DomainContext"
+        )
+
+    def test_patron_privacy_content_includes_library_social_contract(self):
+        ctx = DomainContext()
+        content = ctx.load()
+        assert "social contract" in content.lower(), (
+            "Domain context should include library social contract language"
+        )
+
+    def test_patron_privacy_content_includes_coppa(self):
+        ctx = DomainContext()
+        content = ctx.load()
+        assert "coppa" in content.lower(), (
+            "Domain context should include COPPA guidance"
+        )
+
+    def test_patron_privacy_content_includes_data_minimization(self):
+        ctx = DomainContext()
+        content = ctx.load()
+        assert "data minimization" in content.lower() or "minimiz" in content.lower(), (
+            "Domain context should include data minimization principle"
+        )
 
 
 # ===========================================================================
@@ -660,5 +896,108 @@ class TestLiveOllamaBehavior:
         ]
         assert any(ind in output_lower for ind in cost_indicators), (
             "Expected Priya to raise per-circulation cost concern.\n"
+            f"Response: {result.output[:300]}"
+        )
+
+    def test_live_patron_privacy_flag_raised(self, engine):
+        """Priya must flag privacy concerns when patron data is mentioned."""
+        engine.reset()
+        result = engine.chat(
+            "We want to build a recommendation engine using each patron's full borrowing history."
+        )
+        output_lower = result.output.lower()
+        privacy_indicators = [
+            "privacy", "patron data", "borrowing history", "social contract",
+            "data minimization", "anonymi", "coppa", "retention", "privacy impact"
+        ]
+        assert any(ind in output_lower for ind in privacy_indicators), (
+            "Expected Priya to flag patron data privacy concerns.\n"
+            f"Response: {result.output[:300]}"
+        )
+
+    def test_live_patron_privacy_blocks_artifact_without_impact(self, engine):
+        """Priya must not generate artifacts for patron-data features without privacy impact."""
+        engine.reset()
+        # Provide a rich spec that mentions patron data but no privacy impact discussion
+        engine.chat(
+            "Problem: Patrons don't discover new titles. "
+            "Evidence: 40% don't return after first borrow. "
+            "Users: All library patrons. "
+            "Impact: 20% improvement in repeat borrow rate. "
+            "Solution: Recommendation engine using patron borrowing history. "
+            "Metrics: Repeat borrow rate. "
+            "Risks: DRM. Scope: iOS first. Platform: iOS."
+        )
+        result = engine.chat("/generate")
+        output_lower = result.output.lower()
+        # Should either refuse due to privacy gate or flag the privacy gap
+        privacy_gap_indicators = [
+            "privacy", "patron data", "privacy impact", "data minimization",
+            "incomplete", "missing", "privacy_impact"
+        ]
+        assert any(ind in output_lower for ind in privacy_gap_indicators), (
+            "Expected Priya to block/flag artifact generation due to missing privacy impact.\n"
+            f"Response: {result.output[:400]}"
+        )
+
+    def test_live_error_correction_no_doubling_down(self, engine):
+        """When corrected, Priya must not double-down or hedge."""
+        engine.reset()
+        # First, get Priya to state something
+        engine.chat("What is the per-circulation model?")
+        # Now correct her (even if her answer was fine, test the correction behavior)
+        result = engine.chat(
+            "Actually, you said borrowing is free for patrons — that's correct, "
+            "but the library pays per borrow, not a flat fee. Please correct your framing."
+        )
+        output_lower = result.output.lower()
+        # Should acknowledge the correction, not double-down
+        doubling_down_phrases = [
+            "actually, i said", "that's what i said", "i didn't say that", "you misread"
+        ]
+        for phrase in doubling_down_phrases:
+            assert phrase not in output_lower, (
+                f"Response appears to double-down ('{phrase}' found).\n"
+                f"Response: {result.output[:300]}"
+            )
+        # Should engage with the corrected framing
+        correction_indicators = [
+            "correct", "you're right", "noted", "per borrow", "library pays", "per-circulation"
+        ]
+        assert any(ind in output_lower for ind in correction_indicators), (
+            "Expected Priya to engage with the correction.\n"
+            f"Response: {result.output[:300]}"
+        )
+
+    def test_live_error_correction_no_apology_spiral(self, engine):
+        """Error correction must be clean — no excessive apology."""
+        engine.reset()
+        engine.chat("Tell me about Kids Mode.")
+        result = engine.chat(
+            "You said Kids Mode is for teenagers — it's actually for younger children. "
+            "Please correct that."
+        )
+        output_lower = result.output.lower()
+        # Should not contain repeated apology patterns
+        apology_patterns = ["so sorry", "i sincerely apologize", "i deeply apologize", "forgive me"]
+        for phrase in apology_patterns:
+            assert phrase not in output_lower, (
+                f"Response contains excessive apology ('{phrase}').\n"
+                f"Response: {result.output[:300]}"
+            )
+
+    def test_live_kids_mode_privacy_flag(self, engine):
+        """Priya must flag data minimization requirements for Kids Mode features."""
+        engine.reset()
+        result = engine.chat(
+            "We want to add a reading streak tracker to Kids Mode to motivate young readers."
+        )
+        output_lower = result.output.lower()
+        privacy_indicators = [
+            "coppa", "children", "minor", "data minimization", "privacy",
+            "kids mode", "under 13", "collect", "compliance"
+        ]
+        assert any(ind in output_lower for ind in privacy_indicators), (
+            "Expected Priya to flag COPPA/privacy for Kids Mode feature.\n"
             f"Response: {result.output[:300]}"
         )
