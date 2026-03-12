@@ -55,7 +55,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from pipeline.coach.crystallizer import Crystallizer
-from pipeline.coach.engine import CoachEngine
+from pipeline.coach.engine import CoachEngine, MemorySource
 from pipeline.coach.memory import CoachMemory, generate_session_id
 
 if TYPE_CHECKING:
@@ -168,10 +168,21 @@ async def _get_or_create_engine(session_id: str) -> CoachEngine:
             memory_context = await run_in_threadpool(
                 _memory.recall, query="", top_k=5
             )
+            # Phase B: MemorySource surfaces past-feature analogues and prior
+            # specs in RETROSPECT mode. Added as the first context source so
+            # it runs before RAG retrievers (its results are session-scoped).
+            memory_source = MemorySource(
+                memory=_memory,
+                current_session_id=session_id,
+                top_k=3,
+                analogue_turn_limit=4,
+            )
+            sources = [memory_source] + list(_context_sources or [])
             _sessions[session_id] = CoachEngine(
                 backend=_backend,
                 memory_context=memory_context,
-                context_sources=_context_sources or None,
+                context_sources=sources,
+                coach_memory=_memory,
             )
         return _sessions[session_id]
 
@@ -385,10 +396,9 @@ async def reset(request: Request) -> JSONResponse:
     engine = await _remove_session(session_id)
 
     if engine and engine.messages:
-        crystallizer = Crystallizer()
-        result = crystallizer.extract(engine.messages)
-        if result.items:
-            await run_in_threadpool(_memory.save_session, session_id, result)
+        # Phase B: close_session runs Crystallizer + indexes the feature name.
+        # Falls back gracefully if memory is unavailable.
+        await run_in_threadpool(engine.close_session, session_id)
 
     new_id = generate_session_id()
     new_token = _sign_session(new_id)

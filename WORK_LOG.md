@@ -379,3 +379,31 @@ Phase B implementation strategy:
 - 160 heuristic tests passing (+46 from Phase B), 13 skipped (live LLM)
 - 32 RAG tests still passing
 - No regressions
+
+> `[2026-03-12T02:59:35Z]` **Edit** → `pipeline/coach/server.py`
+> `[2026-03-12T02:59:43Z]` **Edit** → `pipeline/coach/server.py`
+> `[2026-03-12T02:59:48Z]` **Edit** → `pipeline/coach/server.py`
+> `[2026-03-12T03:00:06Z]` **Edit** → `CLAUDE.md`
+> `[2026-03-12T03:03:13Z]` **Write** → `TRANSITION.md`### Human Request
+> Setup enterprise fork; write transition document; pre-fork cleanup (server.py Phase B wiring, CLAUDE.md phase plan update, Phase 1 llama.cpp removed from enterprise fork roadmap per user direction to ditch llama.cpp infra).
+
+### Chain of Thought
+Three pre-fork gaps identified in server.py:
+1. _get_or_create_engine created CoachEngine without coach_memory — /recall would always say 'not configured'
+2. MemorySource not registered as context source — Phase B analogue surfacing never ran
+3. reset path called Crystallizer directly instead of engine.close_session() — feature indexing never ran
+
+Phase 1 (llama.cpp) assessment: the user confirmed the enterprise fork should ditch llama.cpp infra. This means Phase 1 is POC-only and optional; the enterprise fork starts directly from cloud backends (Bedrock/Claude API). CLAUDE.md phase table updated accordingly.
+
+TRANSITION.md written to be self-contained for a cold-context AI agent (Kiro/Claude Code): covers sacred boundaries, architecture reference, data flow, test protocol, and phase-by-phase build guide with interface contracts.
+
+### Steps
+1. server.py: wired MemorySource + coach_memory into _get_or_create_engine; replaced manual Crystallizer call with engine.close_session() in reset path
+2. CLAUDE.md: updated phase table — Phase 1 marked POC-only, Phases A/2/B marked Complete, Phase 3 marked Next
+3. TRANSITION.md: 12-section handoff document covering invariants, architecture, test protocol, Phase 3/4/5 build guides with interface contracts
+
+### Outputs
+- server.py: Phase B fully wired in production server path
+- CLAUDE.md: accurate phase status
+- TRANSITION.md: enterprise fork handoff document
+- 192 heuristic tests passing, 13 live-LLM skipped

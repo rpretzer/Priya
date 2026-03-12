@@ -415,18 +415,21 @@ Priya's coaching core is the stable, tested asset. It carries forward in full:
 
 | Phase | Description | Target Repo | Status |
 |-------|-------------|-------------|--------|
-| 1 | Stabilize Priya on LLaMA-family backend via llama.cpp | POC | **Active** |
+| 1 | Stabilize Priya on LLaMA-family backend via llama.cpp | POC only | POC-only — not carried to enterprise fork |
 | A | Session modes (Working Backwards, Pre-mortem, Steel-man, Prioritize, Retrospect); epistemic triage; error correction protocol; patron privacy gate | POC | **Complete** |
-| 2 | Extend domain context with Hoopla/MWT product knowledge + RAG | POC | Upcoming |
-| B | Active memory tools (cross-session recall, outcome loop, analogical reasoning) | POC | Planned |
-| 3 | Fork enterprise repo; Jira/Confluence integration; analytics stub; cloud LLM backend | Enterprise fork | Planned |
-| 4 | Slack integration; SSO/SAML auth; agentic layer without disturbing coaching core | Enterprise fork | Planned |
-| 5 | Deploy to beta users at MWT; measure spec-to-code pipeline success | Enterprise fork | Planned |
+| 2 | RAG augmentation of domain context; ContextRetriever + VectorStore integration | POC | **Complete** |
+| B | Active memory tools (cross-session recall, feature index, outcome loop, analogical reasoning) | POC | **Complete** |
+| 3 | **Fork enterprise repo**; cloud LLM backend (Bedrock/Claude API); Jira/Confluence connectors; analytics stub; extract coaching core as shared package | Enterprise fork | **Next** |
+| 4 | Slack integration; SSO/SAML auth; agentic orchestration layer (does not touch coaching core) | Enterprise fork | Planned |
+| 5 | Beta deployment at MWT; measure spec-to-code pipeline success; iterate on ProgressTracker weights | Enterprise fork | Planned |
 
-### Phase 1 Priorities (POC)
-- Replace or extend Ollama backend with llama.cpp serving LLaMA-family models
+> **Phase 1 note**: llama.cpp stabilization is a POC-only concern for local development. The enterprise fork starts directly from the cloud LLM backend (Phase 3). There is no dependency on Phase 1 being complete before forking.
+
+### Phase 1 Priorities (POC, optional)
+- Optional: replace Ollama with llama.cpp for local development if preferred
 - Maintain all existing behavioral tests passing
 - Do not change coaching logic — only the backend layer
+- This phase has no bearing on the enterprise fork timeline
 
 ### Phase 2 Priorities (POC)
 - RAG augments (does not replace) the file-driven domain context
