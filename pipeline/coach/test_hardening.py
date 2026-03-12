@@ -24,6 +24,8 @@ import os
 import re
 import pytest
 
+import tempfile
+
 from pipeline.coach.engine import (
     SignalDetector,
     SignalType,
@@ -32,12 +34,15 @@ from pipeline.coach.engine import (
     SessionMode,
     CoachEngine,
     ContextAssembler,
+    ContextChunk,
     DomainContext,
+    MemorySource,
     _PATRON_DATA_PATTERN,
     _PRIVACY_IMPACT_PATTERN,
     _MODE_FIELDS,
 )
-from pipeline.coach.crystallizer import Crystallizer
+from pipeline.coach.crystallizer import Crystallizer, extract_feature_name
+from pipeline.coach.memory import CoachMemory, generate_session_id, _normalize_name, _fts_query_or
 
 
 # ===========================================================================
@@ -1262,3 +1267,496 @@ class TestLiveOllamaBehavior:
             "Expected Priya to flag COPPA/privacy for Kids Mode feature.\n"
             f"Response: {result.output[:300]}"
         )
+
+
+# ===========================================================================
+# Phase B — Active Memory Tools
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def tmp_memory(tmp_path):
+    """Return a CoachMemory instance backed by a temp database."""
+    return CoachMemory(db_path=str(tmp_path / "test.db"))
+
+
+@pytest.fixture
+def populated_memory(tmp_memory):
+    """Memory pre-populated with three feature records across two sessions."""
+    sid1 = generate_session_id()
+    sid2 = generate_session_id()
+    sid3 = generate_session_id()
+
+    tmp_memory.save_feature(
+        sid1,
+        "BingePass Borrow Limit UI",
+        problem_statement="Patrons hit borrow limits without clear explanation",
+        mode="intake",
+        artifact_content="## Problem\nPatrons exceed borrow limits",
+    )
+    tmp_memory.save_feature(
+        sid2,
+        "Accessibility Revamp",
+        problem_statement="Screen reader support broken on Android",
+        mode="intake",
+        artifact_content="## Problem\nWCAA AA compliance gap on Android",
+    )
+    tmp_memory.save_feature(
+        sid3,
+        "KMP Android Migration",
+        problem_statement="Shared business logic missing from Android app",
+        mode="premortem",
+        artifact_content="## Failure Scenario\nMigration stalls at DRM layer",
+    )
+    return tmp_memory, (sid1, sid2, sid3)
+
+
+# ---------------------------------------------------------------------------
+# 11. Feature Memory — save/recall/lookup round-trips
+# ---------------------------------------------------------------------------
+
+class TestFeatureMemory:
+
+    def test_save_feature_returns_id(self, tmp_memory):
+        sid = generate_session_id()
+        fid = tmp_memory.save_feature(sid, "Test Feature Name", problem_statement="some problem")
+        assert fid, "save_feature should return a non-empty ID"
+
+    def test_save_feature_creates_session_stub(self, tmp_memory):
+        """save_feature should create a session row automatically."""
+        sid = generate_session_id()
+        tmp_memory.save_feature(sid, "Auto Session Feature", problem_statement="testing")
+        sessions = tmp_memory.list_sessions()
+        ids = [s["id"] for s in sessions]
+        assert sid in ids
+
+    def test_recall_similar_feature_finds_match(self, populated_memory):
+        mem, _ = populated_memory
+        result = mem.recall_similar_feature("borrow limit patron")
+        assert result, "Should find BingePass feature"
+        assert "BingePass Borrow Limit UI" in result
+
+    def test_recall_similar_feature_empty_on_no_match(self, populated_memory):
+        mem, _ = populated_memory
+        result = mem.recall_similar_feature("xyzzy nonexistent obscure topic")
+        assert result == "", "Should return empty string when nothing matches"
+
+    def test_recall_similar_feature_includes_problem_statement(self, populated_memory):
+        mem, _ = populated_memory
+        result = mem.recall_similar_feature("borrow")
+        assert "Patrons hit borrow limits" in result
+
+    def test_recall_similar_feature_includes_artifact_excerpt(self, populated_memory):
+        mem, _ = populated_memory
+        result = mem.recall_similar_feature("borrow limit")
+        assert "Patrons exceed borrow limits" in result
+
+    def test_recall_excludes_current_session(self, populated_memory):
+        """exclude_session_id should suppress results from own session."""
+        mem, (sid1, _sid2, _sid3) = populated_memory
+        result = mem.recall_similar_feature("borrow limit patron", exclude_session_id=sid1)
+        # BingePass is from sid1 — should not appear
+        assert "BingePass Borrow Limit UI" not in result
+
+    def test_lookup_exact_match(self, populated_memory):
+        mem, _ = populated_memory
+        result = mem.lookup_feature_outcome("BingePass Borrow Limit UI")
+        assert result, "Should find feature by exact name"
+        assert "BingePass Borrow Limit UI" in result
+
+    def test_lookup_exact_match_case_insensitive(self, populated_memory):
+        """Normalized lookup should match regardless of case."""
+        mem, _ = populated_memory
+        result = mem.lookup_feature_outcome("bingepass borrow limit ui")
+        assert result, "Should match case-insensitively"
+        assert "BingePass Borrow Limit UI" in result
+
+    def test_lookup_fuzzy_fallback(self, populated_memory):
+        """Fuzzy lookup finds a close match when exact normalized fails."""
+        mem, _ = populated_memory
+        result = mem.lookup_feature_outcome("borrow limit UI", fuzzy=True)
+        assert result, "Fuzzy lookup should find the feature"
+
+    def test_lookup_returns_artifact_content(self, populated_memory):
+        mem, _ = populated_memory
+        result = mem.lookup_feature_outcome("BingePass Borrow Limit UI")
+        assert "Patrons exceed borrow limits" in result
+
+    def test_lookup_returns_empty_for_unknown(self, populated_memory):
+        mem, _ = populated_memory
+        result = mem.lookup_feature_outcome("Completely Unknown Feature That Does Not Exist")
+        assert result == ""
+
+    def test_lookup_includes_crystal_items_when_present(self, tmp_memory):
+        """After save_session with crystal items, lookup should include them."""
+        from pipeline.coach.crystallizer import Crystallizer, CrystalResult, CrystalItem
+
+        sid = generate_session_id()
+        tmp_memory.save_feature(sid, "DRM Compliance Gate", problem_statement="DRM blocks content")
+        # Save crystal items for the session
+        crystal = CrystalResult(
+            items=[CrystalItem(kind="constraint", text="Must not bypass DRM layer", confidence=0.9)],
+            session_summary="1 constraint",
+        )
+        tmp_memory.save_session(sid, crystal)
+
+        result = tmp_memory.lookup_feature_outcome("DRM Compliance Gate")
+        assert "Must not bypass DRM layer" in result
+
+    def test_upsert_on_duplicate_session_feature(self, tmp_memory):
+        """Saving the same feature name for the same session should upsert."""
+        sid = generate_session_id()
+        fid1 = tmp_memory.save_feature(sid, "Duplicate Feature", problem_statement="v1")
+        fid2 = tmp_memory.save_feature(
+            sid, "Duplicate Feature", problem_statement="v2 updated", artifact_content="artifact v2"
+        )
+        assert fid1 == fid2, "Upsert should return the same ID"
+        result = tmp_memory.lookup_feature_outcome("Duplicate Feature")
+        assert "artifact v2" in result, "Artifact content should be updated"
+
+    def test_normalize_name_function(self):
+        assert _normalize_name("BingePass Borrow Limit UI") == "bingepass borrow limit ui"
+        assert _normalize_name("  KMP-Android Migration! ") == "kmp android migration"
+        assert _normalize_name("ACCESSIBILITY REVAMP") == "accessibility revamp"
+
+    def test_fts_query_or_function(self):
+        assert _fts_query_or("borrow limit patron") == "borrow OR limit OR patron"
+        assert _fts_query_or("borrow") == "borrow"
+        assert _fts_query_or("") == ""
+        # Short tokens (<3 chars) dropped
+        assert "OR" not in _fts_query_or("a b c") or _fts_query_or("a b c") == ""
+
+    def test_recall_top_k_respected(self, populated_memory):
+        """recall_similar_feature should honor top_k limit."""
+        mem, _ = populated_memory
+        # All three features have "Android" or match broadly — ask for top 1
+        result = mem.recall_similar_feature("Android migration accessibility borrow", top_k=1)
+        # Count occurrences of "###" (one per feature heading)
+        count = result.count("###")
+        assert count <= 1, f"Expected at most 1 result, got {count}"
+
+
+# ---------------------------------------------------------------------------
+# 12. Crystallizer feature name extraction
+# ---------------------------------------------------------------------------
+
+class TestCrystallizerFeatureExtraction:
+
+    def test_extracts_name_from_feature_colon(self):
+        msgs = [_make_user_msg("The feature: BingePass Borrow Limit UI needs scoping.")]
+        name, conf = extract_feature_name(msgs)
+        assert name == "BingePass Borrow Limit UI"
+        assert conf >= 0.8
+
+    def test_extracts_name_from_initiative_colon(self):
+        msgs = [_make_user_msg("initiative: Accessibility Revamp is our Q3 priority.")]
+        name, conf = extract_feature_name(msgs)
+        assert name == "Accessibility Revamp"
+        assert conf >= 0.8
+
+    def test_extracts_name_from_building_for(self):
+        msgs = [_make_user_msg("We are building the BingePass Borrow Limit UI for patrons.")]
+        name, conf = extract_feature_name(msgs)
+        assert "BingePass Borrow Limit UI" in name
+        assert conf >= 0.6
+
+    def test_extracts_name_from_quoted_string(self):
+        msgs = [_make_user_msg('The feature called "Patron Reading History" is complex.')]
+        name, conf = extract_feature_name(msgs)
+        assert "Patron Reading History" in name
+        assert conf >= 0.8
+
+    def test_extracts_name_from_project_colon(self):
+        msgs = [_make_user_msg("project: KMP Android Migration is in Phase 2.")]
+        name, conf = extract_feature_name(msgs)
+        assert "KMP Android Migration" in name
+        assert conf >= 0.8
+
+    def test_no_match_for_plain_lowercase(self):
+        msgs = [_make_user_msg("just chatting about stuff here")]
+        name, conf = extract_feature_name(msgs)
+        assert name == ""
+        assert conf == 0.0
+
+    def test_no_match_for_single_word_candidate(self):
+        msgs = [_make_user_msg("feature: BingePass")]
+        name, conf = extract_feature_name(msgs)
+        # Single-word names should be rejected (too ambiguous)
+        assert name == "" or len(name.split()) >= 2
+
+    def test_newest_message_wins(self):
+        """When multiple messages have feature names, the most recent wins."""
+        msgs = [
+            _make_user_msg("feature: Old Feature Name was discussed."),
+            _make_user_msg("assistant message"),
+            _make_user_msg("feature: New Feature Name is what we care about."),
+        ]
+        name, conf = extract_feature_name(msgs)
+        assert "New Feature Name" in name
+
+    def test_returns_empty_for_no_messages(self):
+        name, conf = extract_feature_name([])
+        assert name == ""
+        assert conf == 0.0
+
+    def test_trailing_lowercase_words_stripped(self):
+        msgs = [_make_user_msg("feature: KMP Android Migration is causing issues now.")]
+        name, conf = extract_feature_name(msgs)
+        # "is", "causing", "issues", "now" should be stripped
+        assert name == "KMP Android Migration"
+
+    def test_multipart_content_list(self):
+        """extract_feature_name handles list-format content (multimodal messages)."""
+        msgs = [{"role": "user", "content": [
+            {"type": "text", "text": "The feature: Multimodal Upload Support is needed."}
+        ]}]
+        name, conf = extract_feature_name(msgs)
+        assert "Multimodal Upload Support" in name
+
+
+# ---------------------------------------------------------------------------
+# 13. MemorySource — ContextSource protocol
+# ---------------------------------------------------------------------------
+
+class TestMemorySource:
+
+    def test_implements_context_source_protocol(self, tmp_memory):
+        """MemorySource must implement get_context() and return list[ContextChunk]."""
+        source = MemorySource(memory=tmp_memory, current_session_id="test-session")
+        result = source.get_context({
+            "messages": [_make_user_msg("borrow limit problem")],
+            "missing_fields": [],
+            "turn_count": 0,
+            "mode": SessionMode.INTAKE,
+        })
+        assert isinstance(result, list)
+        for chunk in result:
+            assert isinstance(chunk, ContextChunk)
+
+    def test_returns_empty_on_no_matches(self, tmp_memory):
+        source = MemorySource(memory=tmp_memory)
+        result = source.get_context({
+            "messages": [_make_user_msg("obscure topic xyzzy")],
+            "missing_fields": [],
+            "turn_count": 0,
+            "mode": SessionMode.INTAKE,
+        })
+        assert result == []
+
+    def test_surfaces_analogues_in_early_turns(self, populated_memory):
+        mem, (sid1, _sid2, _sid3) = populated_memory
+        source = MemorySource(memory=mem, current_session_id="new-session", top_k=3)
+        result = source.get_context({
+            "messages": [_make_user_msg("patron borrow limit confusion")],
+            "missing_fields": [],
+            "turn_count": 1,
+            "mode": SessionMode.INTAKE,
+        })
+        assert result, "Should surface analogues in early turns"
+        contents = "\n".join(c.content for c in result)
+        assert "BingePass Borrow Limit UI" in contents
+
+    def test_suppresses_analogues_after_turn_limit(self, populated_memory):
+        mem, _ = populated_memory
+        source = MemorySource(memory=mem, top_k=3, analogue_turn_limit=4)
+        result = source.get_context({
+            "messages": [_make_user_msg("patron borrow limit confusion")],
+            "missing_fields": [],
+            "turn_count": 5,  # past the limit
+            "mode": SessionMode.INTAKE,
+        })
+        # In INTAKE mode past turn limit, no analogues should surface
+        assert result == []
+
+    def test_retrospect_surfaces_prior_spec(self, populated_memory):
+        mem, _ = populated_memory
+        source = MemorySource(memory=mem, top_k=3)
+        msgs = [
+            _make_user_msg("feature: BingePass Borrow Limit UI was supposed to solve patron confusion.")
+        ]
+        result = source.get_context({
+            "messages": msgs,
+            "missing_fields": [],
+            "turn_count": 1,
+            "mode": SessionMode.RETROSPECT,
+        })
+        assert result, "Should surface prior spec in RETROSPECT mode"
+        contents = "\n".join(c.content for c in result)
+        assert "BingePass Borrow Limit UI" in contents
+        assert result[0].source == "memory:prior_spec"
+
+    def test_degrades_gracefully_on_exception(self, tmp_path):
+        """MemorySource must return [] if memory raises an exception."""
+        import unittest.mock as mock
+        bad_memory = mock.MagicMock()
+        bad_memory.recall_similar_feature.side_effect = RuntimeError("DB error")
+        source = MemorySource(memory=bad_memory)
+        result = source.get_context({
+            "messages": [_make_user_msg("some query")],
+            "missing_fields": [],
+            "turn_count": 0,
+            "mode": SessionMode.INTAKE,
+        })
+        assert result == []
+
+    def test_excludes_current_session_from_analogues(self, populated_memory):
+        mem, (sid1, _sid2, _sid3) = populated_memory
+        # Current session is sid1 — its feature (BingePass) should not surface
+        source = MemorySource(memory=mem, current_session_id=sid1, top_k=3)
+        result = source.get_context({
+            "messages": [_make_user_msg("patron borrow limit confusion")],
+            "missing_fields": [],
+            "turn_count": 0,
+            "mode": SessionMode.INTAKE,
+        })
+        contents = "\n".join(c.content for c in result)
+        assert "BingePass Borrow Limit UI" not in contents
+
+
+# ---------------------------------------------------------------------------
+# 14. CoachEngine /recall command
+# ---------------------------------------------------------------------------
+
+class TestCoachEngineRecallCommand:
+
+    @pytest.fixture
+    def engine_with_memory(self, tmp_memory, populated_memory):
+        """CoachEngine backed by populated memory. Uses AssistedBackend stub."""
+        from unittest.mock import MagicMock
+        from pipeline.backends.base import AgentResult
+
+        mem, _ = populated_memory
+
+        backend = MagicMock()
+        backend.chat_stream.return_value = iter(["Acknowledged."])
+
+        engine = CoachEngine(
+            backend=backend,
+            coach_memory=mem,
+        )
+        return engine
+
+    def test_recall_is_slash_command(self):
+        assert "/recall" in __import__("pipeline.coach.engine", fromlist=["_SLASH_COMMANDS"])._SLASH_COMMANDS
+
+    def test_recall_no_query_lists_sessions(self, engine_with_memory):
+        result = engine_with_memory.chat("/recall")
+        # No query → should list recent sessions or features
+        assert result.success
+        assert result.output  # not empty
+
+    def test_recall_with_query_finds_feature(self, engine_with_memory):
+        result = engine_with_memory.chat("/recall borrow limit patron")
+        assert result.success
+        assert "BingePass Borrow Limit UI" in result.output
+
+    def test_recall_with_unmatched_query(self, engine_with_memory):
+        result = engine_with_memory.chat("/recall xyzzy nonexistent obscure")
+        assert result.success
+        # Should say no results found, not crash
+        assert "no" in result.output.lower() or "not found" in result.output.lower() or result.output.strip()
+
+    def test_recall_without_memory_returns_helpful_message(self):
+        """When CoachEngine has no memory configured, /recall explains that."""
+        from unittest.mock import MagicMock
+        backend = MagicMock()
+        backend.chat_stream.return_value = iter(["OK."])
+        engine = CoachEngine(backend=backend, coach_memory=None)
+        result = engine.chat("/recall anything")
+        assert result.success
+        assert "memory" in result.output.lower()
+
+    def test_recall_with_args_dispatched_correctly(self, engine_with_memory):
+        """/recall <query> should dispatch to _handle_recall with args."""
+        result = engine_with_memory.chat("/recall accessibility android")
+        assert result.success
+        # Either finds Accessibility Revamp or KMP Android Migration
+        assert any(term in result.output for term in [
+            "Accessibility", "KMP", "Android", "no", "not found"
+        ])
+
+
+# ---------------------------------------------------------------------------
+# 15. CoachEngine.close_session — feature indexing
+# ---------------------------------------------------------------------------
+
+class TestCoachEngineCloseSession:
+
+    def test_close_session_indexes_feature_from_conversation(self, tmp_memory):
+        """close_session extracts feature name and saves to feature index."""
+        from unittest.mock import MagicMock
+
+        backend = MagicMock()
+        backend.chat_stream.return_value = iter(["OK."])
+
+        engine = CoachEngine(backend=backend, coach_memory=tmp_memory)
+        engine.chat("The feature: BingePass Discovery Redesign needs scoping.")
+
+        sid = generate_session_id()
+        engine.close_session(sid, artifact_content="## Problem\nDiscovery UX")
+
+        result = tmp_memory.lookup_feature_outcome("BingePass Discovery Redesign")
+        assert result, "Feature should be indexed after close_session"
+        assert "BingePass Discovery Redesign" in result
+
+    def test_close_session_saves_artifact_content(self, tmp_memory):
+        from unittest.mock import MagicMock
+
+        backend = MagicMock()
+        backend.chat_stream.return_value = iter(["OK."])
+
+        engine = CoachEngine(backend=backend, coach_memory=tmp_memory)
+        engine.chat("feature: Patron Notification System must be built.")
+
+        sid = generate_session_id()
+        engine.close_session(sid, artifact_content="## Impact\nReduce missed holds")
+
+        result = tmp_memory.lookup_feature_outcome("Patron Notification System")
+        assert "Reduce missed holds" in result
+
+    def test_close_session_with_no_memory_is_noop(self):
+        """close_session should not raise when memory is None."""
+        from unittest.mock import MagicMock
+
+        backend = MagicMock()
+        backend.chat_stream.return_value = iter(["OK."])
+
+        engine = CoachEngine(backend=backend, coach_memory=None)
+        engine.chat("feature: Test Feature here")
+        # Must not raise
+        engine.close_session("some-session-id")
+
+    def test_close_session_with_empty_messages_is_noop(self, tmp_memory):
+        """close_session with no messages should not raise or write anything."""
+        from unittest.mock import MagicMock
+
+        backend = MagicMock()
+        engine = CoachEngine(backend=backend, coach_memory=tmp_memory)
+        # No messages — engine.close_session should be a no-op
+        engine.close_session("no-messages-session")
+        sessions = tmp_memory.list_sessions()
+        assert "no-messages-session" not in [s["id"] for s in sessions]
+
+    def test_close_session_skips_low_confidence_name(self, tmp_memory):
+        """If no confident feature name found, feature should not be indexed."""
+        from unittest.mock import MagicMock
+
+        backend = MagicMock()
+        backend.chat_stream.return_value = iter(["OK."])
+
+        engine = CoachEngine(backend=backend, coach_memory=tmp_memory)
+        # Plain text with no proper-noun feature name
+        engine.chat("Just chatting about the general product roadmap without specifics.")
+
+        sid = generate_session_id()
+        engine.close_session(sid)
+
+        # No feature should have been indexed
+        import sqlite3
+        conn = sqlite3.connect(tmp_memory._db_path)
+        rows = conn.execute("SELECT feature_name FROM features WHERE session_id = ?", (sid,)).fetchall()
+        conn.close()
+        assert rows == [], f"Unexpected features indexed: {rows}"

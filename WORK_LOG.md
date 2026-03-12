@@ -333,4 +333,49 @@ Key decisions:
 > `[2026-03-12T02:25:03Z]` **Edit** → `pipeline/methodology/personas/coach-priya.md`
 > `[2026-03-12T02:25:11Z]` **Edit** → `pipeline/coach/test_hardening.py`
 > `[2026-03-12T02:25:56Z]` **Edit** → `pipeline/coach/test_hardening.py`
-> `[2026-03-12T02:26:18Z]` **Edit** → `CLAUDE.md`
+> `[2026-03-12T02:26:18Z]` **Edit** → `CLAUDE.md`## Session — 2026-03-12
+
+### Human Request
+> Proceed with suggested next steps: Phase B — Active Memory Tools (cross-session recall, outcome loop closure, analogical reasoning)
+
+> `[2026-03-12T02:39:42Z]` **Edit** → `pipeline/coach/memory.py`
+> `[2026-03-12T02:39:52Z]` **Edit** → `pipeline/coach/memory.py`
+> `[2026-03-12T02:40:32Z]` **Edit** → `pipeline/coach/memory.py`
+> `[2026-03-12T02:40:39Z]` **Edit** → `pipeline/coach/memory.py`
+> `[2026-03-12T02:41:31Z]` **Edit** → `pipeline/coach/crystallizer.py`
+> `[2026-03-12T02:41:54Z]` **Edit** → `pipeline/coach/engine.py`
+> `[2026-03-12T02:42:18Z]` **Edit** → `pipeline/coach/engine.py`
+> `[2026-03-12T02:42:43Z]` **Edit** → `pipeline/coach/engine.py`
+> `[2026-03-12T02:42:49Z]` **Edit** → `pipeline/coach/engine.py`
+> `[2026-03-12T02:43:01Z]` **Edit** → `pipeline/coach/engine.py`
+> `[2026-03-12T02:43:16Z]` **Edit** → `pipeline/coach/engine.py`
+> `[2026-03-12T02:43:27Z]` **Edit** → `pipeline/coach/engine.py`
+> `[2026-03-12T02:43:47Z]` **Edit** → `pipeline/coach/engine.py`
+> `[2026-03-12T02:44:22Z]` **Edit** → `pipeline/coach/engine.py`
+> `[2026-03-12T02:45:29Z]` **Edit** → `pipeline/coach/memory.py`
+> `[2026-03-12T02:45:38Z]` **Edit** → `pipeline/coach/memory.py`
+> `[2026-03-12T02:46:24Z]` **Edit** → `pipeline/coach/crystallizer.py`
+> `[2026-03-12T02:47:12Z]` **Edit** → `pipeline/coach/crystallizer.py`
+> `[2026-03-12T02:47:20Z]` **Edit** → `pipeline/coach/crystallizer.py`
+> `[2026-03-12T02:48:22Z]` **Edit** → `pipeline/coach/test_hardening.py`
+> `[2026-03-12T02:50:42Z]` **Edit** → `pipeline/coach/test_hardening.py`
+> `[2026-03-12T02:51:17Z]` **Edit** → `pipeline/coach/crystallizer.py`### Chain of Thought
+Phase B implementation strategy:
+- Extended CoachMemory with a features table + FTS5 index; chose FTS5 OR-query for analogue recall (AND fails multi-word queries where not all terms appear in a single record).
+- extract_feature_name uses re.I for keyword detection but enforces an uppercase-first guard on the capture group to avoid matching lowercase sentence fragments.
+- _clean_feature_candidate strips trailing sentence-predicate words using a boundary word set, which handles 'Accessibility Revamp is our Q3 priority' correctly.
+- MemorySource degrades gracefully (returns [] on any exception) — critical for the ContextSource contract.
+- CoachEngine.close_session gates on confidence >= 0.6 before indexing; avoids polluting feature index with low-confidence extractions.
+- /recall dispatches with args — changed cmd_token dispatch so '/recall some query' routes correctly.
+
+### Steps
+1. memory.py: added features table, save_feature, recall_similar_feature, lookup_feature_outcome, _normalize_name, _fts_query_or
+2. crystallizer.py: added extract_feature_name, _clean_feature_candidate, _SENTENCE_BOUNDARY_WORDS, _FEATURE_NAME_PATTERNS
+3. engine.py: added MemorySource, coach_memory param, close_session, /recall handler, mode in conversation_state
+4. test_hardening.py: 46 new heuristic tests across 5 classes (TestFeatureMemory, TestCrystallizerFeatureExtraction, TestMemorySource, TestCoachEngineRecallCommand, TestCoachEngineCloseSession)
+5. Fixed FTS5 OR-query bug; fixed uppercase guard for proper nouns; fixed sentence boundary stripping for 'Q3' case
+
+### Outputs
+- 160 heuristic tests passing (+46 from Phase B), 13 skipped (live LLM)
+- 32 RAG tests still passing
+- No regressions

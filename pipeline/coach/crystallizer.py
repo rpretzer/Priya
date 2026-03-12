@@ -227,3 +227,127 @@ class Crystallizer:
             counts[item.kind] = counts.get(item.kind, 0) + 1
         parts = [f"{v} {k}(s)" for k, v in sorted(counts.items())]
         return "Session learnings: " + ", ".join(parts) + f" ({len(result.items)} total)."
+
+
+# ---------------------------------------------------------------------------
+# Phase B — Feature name extraction (heuristic, no LLM)
+# ---------------------------------------------------------------------------
+
+# Patterns that introduce a feature or initiative name in conversation.
+# Each group(1) should capture the candidate name.
+# NOTE: Use re.I only for keyword detection (before the capture group).
+# The capture group `[A-Z][A-Za-z0-9...]` intentionally requires an uppercase
+# first letter so that only proper-noun candidates are accepted.
+_FEATURE_NAME_PATTERNS: list[re.Pattern] = [
+    # "feature: X" / "feature X" (colon or space separator)
+    re.compile(r"\bfeature[:\s]+(?:the\s+)?([A-Z][A-Za-z0-9 /\-_&]{2,50})", re.I),
+    # "initiative: X"
+    re.compile(r"\binitiative[:\s]+(?:the\s+)?([A-Z][A-Za-z0-9 /\-_&]{2,50})", re.I),
+    # "building the X for" or "building X for"
+    re.compile(r"\bbuilding\s+(?:the\s+)?([A-Z][A-Za-z0-9 /\-_&]{3,50})\s+for\b", re.I),
+    # "project: X"
+    re.compile(r"\bproject[:\s]+(?:the\s+)?([A-Z][A-Za-z0-9 /\-_&]{2,50})", re.I),
+    # Quoted names: "BingePass Borrow Limit" or 'KMP Migration' — no re.I:
+    # we require the name to start with an uppercase letter in the source.
+    re.compile(r'["\']([A-Z][A-Za-z0-9 /\-_&]{3,60})["\']'),
+    # called/named/titled X — require Title Case words (no re.I here)
+    re.compile(
+        r'\b(?:called|named|titled)\s+["\']?'
+        r'([A-Z][A-Za-z0-9]{1,}(?:\s+[A-Z][A-Za-z0-9]{1,}){1,5})["\']?'
+    ),
+]
+
+_MIN_FEATURE_TOKENS = 2  # single-word names are too ambiguous
+
+
+# Words that signal "we've left the feature name and entered a sentence predicate"
+_SENTENCE_BOUNDARY_WORDS: frozenset[str] = frozenset({
+    "is", "are", "was", "were", "will", "would", "should", "could", "has", "have",
+    "had", "been", "be", "do", "does", "did", "get", "got", "need", "needs",
+    "for", "from", "in", "on", "at", "to", "with", "by", "of", "our", "their",
+    "its", "this", "that", "which", "who", "when", "now", "here", "there", "then",
+    "and", "but", "or", "so", "because", "although", "while", "since", "during",
+    "after", "before", "until", "about", "not", "no", "a", "an", "the",
+    # Quarter/date markers
+    "q1", "q2", "q3", "q4",
+    # Common sentence starters that follow feature names
+    "causes", "causing", "caused", "needs", "needed", "requires", "required",
+    "blocks", "blocking", "blocked", "delays", "delayed", "stalls", "stalled",
+})
+
+
+def _clean_feature_candidate(name: str) -> str:
+    """Strip trailing sentence-context words from a captured feature name.
+
+    Feature names are Title Case proper nouns. Trailing sentence predicate
+    words (verbs, prepositions, articles, date markers) are over-capture
+    artifacts from the surrounding sentence.
+
+    Examples:
+        "BingePass Borrow Limit UI is causing" → "BingePass Borrow Limit UI"
+        "KMP Android Migration now works" → "KMP Android Migration"
+        "Accessibility Revamp is our Q3" → "Accessibility Revamp"
+        "Accessibility Revamp" → "Accessibility Revamp" (unchanged)
+    """
+    tokens = name.split()
+    # Walk from the end, dropping sentence-boundary words (case-insensitive)
+    while tokens and (tokens[-1].islower() or tokens[-1].lower() in _SENTENCE_BOUNDARY_WORDS):
+        tokens.pop()
+    return " ".join(tokens)
+
+
+def extract_feature_name(messages: list[dict]) -> tuple[str, float]:
+    """Heuristically extract the feature/initiative name from conversation messages.
+
+    Scans user messages newest-first so the most recent explicit name wins.
+    Returns (name, confidence) where confidence is 0.0 if nothing was found.
+
+    This is intentionally heuristic. Low confidence (<0.7) should be treated
+    as a hint, not ground truth — present it to the user for confirmation.
+
+    Args:
+        messages: list of {"role": str, "content": str|list} dicts.
+
+    Returns:
+        (feature_name, confidence) — confidence is 0.0–1.0.
+    """
+    user_texts: list[str] = []
+    for msg in messages:
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            text = " ".join(
+                b.get("text", "") for b in content
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
+        else:
+            text = str(content)
+        user_texts.append(text)
+
+    user_texts.reverse()  # newest first
+
+    for text in user_texts:
+        for pattern in _FEATURE_NAME_PATTERNS:
+            m = pattern.search(text)
+            if m:
+                candidate = _clean_feature_candidate(m.group(1).strip())
+                if not candidate:
+                    continue
+                if len(candidate.split()) < _MIN_FEATURE_TOKENS:
+                    continue
+                # Require the candidate to start with an uppercase letter —
+                # feature names are proper nouns.
+                if not candidate[0].isupper():
+                    continue
+                # Confidence heuristic: explicit markers > quoted > positional
+                pat_src = pattern.pattern
+                if re.search(r'feature|initiative|project', pat_src, re.I):
+                    confidence = 0.85
+                elif '"' in pat_src or "'" in pat_src:
+                    confidence = 0.80
+                else:
+                    confidence = 0.65
+                return candidate, confidence
+
+    return "", 0.0

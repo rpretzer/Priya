@@ -22,9 +22,12 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Generator
+from typing import TYPE_CHECKING, Generator
 
 from pipeline.backends.base import AgentBackend, AgentResult
+
+if TYPE_CHECKING:
+    from pipeline.coach.memory import CoachMemory
 
 
 # ===========================================================================
@@ -74,6 +77,110 @@ class ContextSource(ABC):
             List of ContextChunk, sorted by relevance score descending.
             Return [] if nothing relevant or on any error.
         """
+
+
+# ===========================================================================
+# MemorySource — Phase B active memory ContextSource adapter
+# ===========================================================================
+
+class MemorySource(ContextSource):
+    """ContextSource adapter that surfaces past-feature analogues from CoachMemory.
+
+    Implements the ContextSource protocol so it can be registered with
+    ContextAssembler alongside RAG retrievers. At low turn counts it surfaces
+    analogous past features; in RETROSPECT mode it surfaces the prior spec.
+
+    Degrades gracefully — if CoachMemory is unavailable or returns nothing,
+    returns [].
+
+    Args:
+        memory: A CoachMemory instance.
+        current_session_id: ID of the ongoing session (excluded from recall).
+        top_k: Maximum number of analogous features to surface.
+        analogue_turn_limit: Only surface analogues during early turns
+                             (default 4). After that the conversation is rich
+                             enough to stand on its own.
+    """
+
+    def __init__(
+        self,
+        memory: "CoachMemory",
+        current_session_id: str = "",
+        top_k: int = 3,
+        analogue_turn_limit: int = 4,
+    ):
+        self._memory = memory
+        self._session_id = current_session_id
+        self._top_k = top_k
+        self._analogue_turn_limit = analogue_turn_limit
+
+    def get_context(self, conversation_state: dict) -> list[ContextChunk]:
+        """Return memory context relevant to the current conversation.
+
+        Strategy:
+        - turn 0-N (early): search for analogous past features using the
+          last user message as the query.
+        - RETROSPECT mode: look up the prior spec for the named feature.
+        - Returns [] on any error or when nothing is found.
+        """
+        try:
+            turn_count = conversation_state.get("turn_count", 0)
+            messages = conversation_state.get("messages", [])
+            mode = conversation_state.get("mode", "intake")
+
+            # Build a query from the most recent user message
+            query = ""
+            for msg in reversed(messages):
+                if msg.get("role") == "user":
+                    content = msg.get("content", "")
+                    if isinstance(content, list):
+                        query = " ".join(
+                            b.get("text", "") for b in content
+                            if isinstance(b, dict) and b.get("type") == "text"
+                        )
+                    else:
+                        query = str(content)
+                    break
+
+            if not query:
+                return []
+
+            chunks: list[ContextChunk] = []
+
+            # RETROSPECT: surface prior spec for the named feature
+            if mode == SessionMode.RETROSPECT.value or mode == SessionMode.RETROSPECT:
+                from pipeline.coach.crystallizer import extract_feature_name
+                fname, confidence = extract_feature_name(messages)
+                if fname and confidence >= 0.6:
+                    outcome_text = self._memory.lookup_feature_outcome(fname)
+                    if outcome_text:
+                        chunks.append(ContextChunk(
+                            source="memory:prior_spec",
+                            content=outcome_text,
+                            score=0.95,
+                            metadata={"feature_name": fname, "confidence": confidence},
+                        ))
+                        return chunks  # Prior spec is the primary context for retrospect
+
+            # Early turns: surface analogous past features
+            if turn_count <= self._analogue_turn_limit:
+                analogues = self._memory.recall_similar_feature(
+                    query=query,
+                    top_k=self._top_k,
+                    exclude_session_id=self._session_id or None,
+                )
+                if analogues:
+                    chunks.append(ContextChunk(
+                        source="memory:analogues",
+                        content=analogues,
+                        score=0.70,
+                        metadata={"turn_count": turn_count},
+                    ))
+
+            return chunks
+
+        except Exception:
+            return []  # Always degrade gracefully
 
 
 # ===========================================================================
@@ -1160,6 +1267,7 @@ class ContextAssembler:
 _SLASH_COMMANDS = {
     "/help", "/status", "/generate", "/reset", "/mode",
     "/intake", "/wb", "/premortem", "/steelman", "/prioritize", "/retro",
+    "/recall",
 }
 
 _MODE_SLASH_MAP: dict[str, SessionMode] = {
@@ -1207,12 +1315,15 @@ Session commands:
   /generate    — generate artifacts (gated by completeness)
   /reset       — clear this session and start over
   /mode        — show active mode
+  /recall <query>  — search past sessions for similar features or learnings
 
 Tips:
   - Start with the problem, not the feature. Always.
   - Bring data. Quantified problems get better specs.
   - Use /wb before /intake when you want to clarify the end state first.
   - Use /premortem on anything with a non-obvious adoption or measurement risk.
+  - Use /recall to surface what we learned from similar past work before starting.
+  - Use /retro after shipping to close the outcome loop and feed learnings back.
 """.strip()
 
 
@@ -1236,6 +1347,7 @@ class CoachEngine:
         memory_context: str = "",
         context_sources: list[ContextSource] | None = None,
         initial_mode: SessionMode = SessionMode.INTAKE,
+        coach_memory: "CoachMemory | None" = None,
     ):
         self._backend = backend
         self._assembler = ContextAssembler(
@@ -1245,6 +1357,7 @@ class CoachEngine:
         self._tracker = ProgressTracker(mode=initial_mode)
         self._detector = SignalDetector()
         self._memory_context = memory_context
+        self._memory: "CoachMemory | None" = coach_memory
         self._messages: list[dict] = []
         self._turn_count: int = 0
 
@@ -1273,9 +1386,11 @@ class CoachEngine:
         4. Calls AgentBackend.chat_stream
         5. Appends the assistant response to history
         """
-        # Handle slash commands first
-        stripped = user_message.strip().lower()
-        if stripped in _SLASH_COMMANDS:
+        # Handle slash commands first — match on the command token only so
+        # "/recall some query" is dispatched even though it has trailing args.
+        stripped = user_message.strip()
+        cmd_token = stripped.split()[0].lower() if stripped else ""
+        if cmd_token in _SLASH_COMMANDS:
             response = self._handle_slash(stripped)
             self._append_message("user", user_message)
             self._append_message("assistant", response)
@@ -1303,6 +1418,7 @@ class CoachEngine:
                 "messages": self._messages[-6:],  # last 3 turns
                 "missing_fields": self._tracker.missing_fields(),
                 "turn_count": self._turn_count,
+                "mode": self._tracker.mode,
             },
         )
 
@@ -1352,11 +1468,73 @@ class CoachEngine:
     def turn_count(self) -> int:
         return self._turn_count
 
+    @property
+    def coach_memory(self) -> "CoachMemory | None":
+        return self._memory
+
+    def close_session(
+        self,
+        session_id: str,
+        artifact_content: str = "",
+    ) -> None:
+        """Finalize a session: run Crystallizer, persist to CoachMemory.
+
+        Call this when a session ends (user closes tab, /reset with persist,
+        or server shutdown). Idempotent — calling twice does no harm.
+
+        Phase B additions:
+        - Extracts the feature name heuristically and saves it to the feature
+          index so future sessions can find analogues.
+        - Saves the artifact_content (if provided) alongside the feature record.
+
+        Args:
+            session_id: Stable ID for this session (from generate_session_id()).
+            artifact_content: Full text of any generated artifact to persist.
+        """
+        if self._memory is None or not self._messages:
+            return
+
+        from pipeline.coach.crystallizer import Crystallizer, extract_feature_name
+
+        crystal = Crystallizer()
+        result = crystal.extract(self._messages)
+        self._memory.save_session(session_id, result)
+
+        # Feature index: extract name and save
+        feature_name, confidence = extract_feature_name(self._messages)
+        if feature_name and confidence >= 0.6:
+            # Build a short problem statement from the first user message
+            problem_statement = ""
+            for msg in self._messages:
+                if msg.get("role") == "user":
+                    content = msg.get("content", "")
+                    if isinstance(content, str):
+                        problem_statement = content[:300]
+                    elif isinstance(content, list):
+                        problem_statement = " ".join(
+                            b.get("text", "") for b in content
+                            if isinstance(b, dict) and b.get("type") == "text"
+                        )[:300]
+                    break
+
+            self._memory.save_feature(
+                session_id=session_id,
+                feature_name=feature_name,
+                problem_statement=problem_statement,
+                mode=self._tracker.mode.value,
+                artifact_content=artifact_content,
+            )
+
     # ------------------------------------------------------------------
     # Slash command handlers
     # ------------------------------------------------------------------
 
-    def _handle_slash(self, command: str) -> str:
+    def _handle_slash(self, raw: str) -> str:
+        """Dispatch a slash command. raw may include arguments after the token."""
+        parts = raw.strip().split(None, 1)
+        command = parts[0].lower()
+        args = parts[1] if len(parts) > 1 else ""
+
         # Mode switch commands
         if command in _MODE_SLASH_MAP:
             new_mode = _MODE_SLASH_MAP[command]
@@ -1375,7 +1553,56 @@ class CoachEngine:
             current_mode = self._tracker.mode
             self.reset()
             return f"Session cleared. Mode: {current_mode.value}. Start fresh."
+        elif command == "/recall":
+            return self._handle_recall(args)
         return f"Unknown command: {command}"
+
+    def _handle_recall(self, query: str) -> str:
+        """Search CoachMemory for past features or learnings matching query.
+
+        If no query is provided, returns the most recent 3 sessions' features.
+        If memory is not configured, returns an informative message.
+        """
+        if self._memory is None:
+            return (
+                "Memory is not configured for this session. "
+                "Start the coach with a memory path to enable /recall."
+            )
+
+        query = query.strip()
+
+        if not query:
+            # No query: list recent feature names as a menu
+            try:
+                sessions = self._memory.list_sessions(limit=5)
+            except Exception:
+                sessions = []
+            if not sessions:
+                return "No past sessions found in memory."
+            lines = ["**Recent sessions:**"]
+            for s in sessions:
+                lines.append(f"- {s['created_at'][:10]}  {s['summary']}")
+            lines.append("\nUse `/recall <feature name or topic>` to search for specific past work.")
+            return "\n".join(lines)
+
+        # FTS search over crystal items (cross-domain)
+        crystal_context = self._memory.recall(query=query, top_k=5)
+
+        # Feature analogue search
+        feature_context = self._memory.recall_similar_feature(
+            query=query,
+            top_k=3,
+        )
+
+        if not crystal_context and not feature_context:
+            return f"No past sessions found matching: **{query}**"
+
+        parts = []
+        if feature_context:
+            parts.append(feature_context)
+        if crystal_context:
+            parts.append(crystal_context)
+        return "\n\n".join(parts)
 
     @staticmethod
     def _mode_switch_message(mode: SessionMode) -> str:
