@@ -416,7 +416,9 @@ Priya's coaching core is the stable, tested asset. It carries forward in full:
 | Phase | Description | Target Repo | Status |
 |-------|-------------|-------------|--------|
 | 1 | Stabilize Priya on LLaMA-family backend via llama.cpp | POC | **Active** |
+| A | Session modes (Working Backwards, Pre-mortem, Steel-man, Prioritize, Retrospect); epistemic triage; error correction protocol; patron privacy gate | POC | **Complete** |
 | 2 | Extend domain context with Hoopla/MWT product knowledge + RAG | POC | Upcoming |
+| B | Active memory tools (cross-session recall, outcome loop, analogical reasoning) | POC | Planned |
 | 3 | Fork enterprise repo; Jira/Confluence integration; analytics stub; cloud LLM backend | Enterprise fork | Planned |
 | 4 | Slack integration; SSO/SAML auth; agentic layer without disturbing coaching core | Enterprise fork | Planned |
 | 5 | Deploy to beta users at MWT; measure spec-to-code pipeline success | Enterprise fork | Planned |

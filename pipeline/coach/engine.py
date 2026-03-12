@@ -89,6 +89,33 @@ class FieldStatus(Enum):
 
 
 # ===========================================================================
+# SessionMode — the active facilitation mode
+# ===========================================================================
+
+class SessionMode(Enum):
+    """Active facilitation mode for the current session.
+
+    Each mode has a different conversation arc, different ProgressTracker
+    fields, and produces a different artifact. Priya's persona does not
+    change across modes — only the arc and scoring change.
+
+    Slash command to enter each mode:
+        /intake        — default spec funnel (business-case, epics, stories)
+        /wb            — Working Backwards (press release → requirements)
+        /premortem     — Pre-mortem (failure scenario → risk synthesis)
+        /steelman      — Steel-man (strongest counter-argument → refined position)
+        /prioritize    — Prioritization (candidates → ranked priority stack)
+        /retro         — Retrospective (prior spec → outcome loop closure)
+    """
+    INTAKE = "intake"
+    WORKING_BACKWARDS = "working-backwards"
+    PREMORTEM = "premortem"
+    STEELMAN = "steelman"
+    PRIORITIZE = "prioritize"
+    RETROSPECT = "retrospect"
+
+
+# ===========================================================================
 # ProgressTracker — scores completeness across business-case fields
 # ===========================================================================
 
@@ -174,6 +201,109 @@ _PRIVACY_IMPACT_PATTERN = re.compile(
 )
 
 
+# Fields required for artifact generation in each mode
+_MODE_FIELDS: dict[str, list[str]] = {
+    SessionMode.INTAKE.value: [
+        "problem", "evidence", "users", "impact", "solution",
+        "metrics", "risks", "scope", "platform",
+    ],
+    SessionMode.WORKING_BACKWARDS.value: [
+        "headline", "customer_problem", "solution_experience",
+        "patron_quote", "admin_quote", "internal_faq",
+    ],
+    SessionMode.PREMORTEM.value: [
+        "failure_scenario", "likely_causes", "adoption_risks",
+        "measurement_risks", "mitigations",
+    ],
+    SessionMode.STEELMAN.value: [
+        "position", "counter_argument", "pm_response",
+    ],
+    SessionMode.PRIORITIZE.value: [
+        "candidates", "scoring_criteria", "ranked_output",
+    ],
+    SessionMode.RETROSPECT.value: [
+        "prior_spec", "actual_outcome", "delta_analysis", "learnings",
+    ],
+}
+
+# Field detection patterns for non-intake modes (binary MISSING/ADEQUATE)
+_MODE_FIELD_PATTERNS: dict[str, dict[str, list[re.Pattern]]] = {
+    SessionMode.WORKING_BACKWARDS.value: {
+        "headline": [
+            re.compile(r"\b(headline|announcement|title|in one sentence|press release)\b", re.I),
+        ],
+        "customer_problem": [
+            re.compile(r"\b(problem|pain|struggle|friction|today they|currently they|can't easily)\b", re.I),
+        ],
+        "solution_experience": [
+            re.compile(r"\b(experience|how it works|workflow|the flow|what (they|patrons|admins) (do|see|get))\b", re.I),
+        ],
+        "patron_quote": [
+            re.compile(r"\b(patron (would say|said|feels|quote)|user (would say|said)|from a patron)\b", re.I),
+        ],
+        "admin_quote": [
+            re.compile(r"\b(admin (would say|said)|librarian (would say|said)|from (an? )?(admin|librarian))\b", re.I),
+        ],
+        "internal_faq": [
+            re.compile(r"\b(FAQ|the team (will|would) ask|engineering (will|would)|objection|internally|hardest question)\b", re.I),
+        ],
+    },
+    SessionMode.PREMORTEM.value: {
+        "failure_scenario": [
+            re.compile(r"\b(failed|failure|didn.?t work|unsuccessful|went wrong|six months|twelve months|a year later)\b", re.I),
+        ],
+        "likely_causes": [
+            re.compile(r"\b(because|cause(d by)?|reason|why (it )?(failed|didn.?t)|root cause|most likely)\b", re.I),
+        ],
+        "adoption_risks": [
+            re.compile(r"\b(adoption|usage|nobody used|didn.?t use|never used|uptake|discovered|aware)\b", re.I),
+        ],
+        "measurement_risks": [
+            re.compile(r"\b(couldn.?t (measure|track)|no data|metric|couldn.?t tell|unable to confirm|untracked)\b", re.I),
+        ],
+        "mitigations": [
+            re.compile(r"\b(prevent|mitigate|commitment|safeguard|we (will|would|should|plan to)|going forward|instead)\b", re.I),
+        ],
+    },
+    SessionMode.STEELMAN.value: {
+        "position": [
+            re.compile(r"\b(our position|we believe|our proposal|we (think|argue|claim|propose))\b", re.I),
+        ],
+        "counter_argument": [
+            re.compile(r"\b(strongest (case|argument)|counter|objection|against this|case for not|devil.?s advocate)\b", re.I),
+        ],
+        "pm_response": [
+            re.compile(r"\b(our response|we.?d (say|argue|counter)|answer (to|is)|we acknowledge|we accept)\b", re.I),
+        ],
+    },
+    SessionMode.PRIORITIZE.value: {
+        "candidates": [
+            re.compile(r"\b(option|candidate|feature|initiative|proposal|alternative|item)\b", re.I),
+        ],
+        "scoring_criteria": [
+            re.compile(r"\b(scoring|criteria|weight|impact|effort|confidence|ICE|RICE|framework)\b", re.I),
+        ],
+        "ranked_output": [
+            re.compile(r"\b(rank(ed|ing)?|priority|first|second|third|recommend|winner|top)\b", re.I),
+        ],
+    },
+    SessionMode.RETROSPECT.value: {
+        "prior_spec": [
+            re.compile(r"\b(the spec|we planned|we predicted|business case (said|expected)|the original)\b", re.I),
+        ],
+        "actual_outcome": [
+            re.compile(r"\b(what (actually )?happened|the outcome|shipped|result|actual|in practice)\b", re.I),
+        ],
+        "delta_analysis": [
+            re.compile(r"\b(difference|gap|why|variance|off|discrepancy|wrong|missed|different from)\b", re.I),
+        ],
+        "learnings": [
+            re.compile(r"\b(learn(ed|ing)|takeaway|next time|going forward|insight|apply|do differently)\b", re.I),
+        ],
+    },
+}
+
+
 @dataclass
 class FieldScore:
     """Score for one field."""
@@ -183,20 +313,40 @@ class FieldScore:
 
 
 class ProgressTracker:
-    """Scores business-case completeness across all required fields.
+    """Scores session completeness across all required fields for the active mode.
 
     Uses regex heuristics — no LLM calls. Fast and deterministic.
 
-    Completeness is scored as a float 0.0–1.0 across the 9 fields.
-    Artifact generation is gated at _ARTIFACT_GATE_THRESHOLD.
+    In INTAKE mode: scores 9 business-case fields with weighted completeness.
+    In other modes: scores mode-specific fields with equal weighting.
+    Artifact generation is gated at _ARTIFACT_GATE_THRESHOLD in all modes.
     """
 
-    def __init__(self):
+    def __init__(self, mode: SessionMode = SessionMode.INTAKE):
+        self._mode: SessionMode = mode
         self._scores: dict[str, FieldScore] = {
-            f: FieldScore(field=f) for f in _SCORED_FIELDS
+            f: FieldScore(field=f) for f in self._active_fields()
         }
         self._privacy_gate_required: bool = False
         self._privacy_impact_met: bool = False
+
+    # ------------------------------------------------------------------
+    # Mode management
+    # ------------------------------------------------------------------
+
+    def set_mode(self, mode: SessionMode) -> None:
+        """Switch to a new session mode and reset all scores."""
+        self._mode = mode
+        self._scores = {f: FieldScore(field=f) for f in self._active_fields()}
+        self._privacy_gate_required = False
+        self._privacy_impact_met = False
+
+    @property
+    def mode(self) -> SessionMode:
+        return self._mode
+
+    def _active_fields(self) -> list[str]:
+        return _MODE_FIELDS.get(self._mode.value, _SCORED_FIELDS)
 
     # ------------------------------------------------------------------
     # Public API
@@ -206,28 +356,38 @@ class ProgressTracker:
         """Re-score all fields from the full conversation history.
 
         Called after each user turn so ProgressTracker always reflects the
-        latest state.
+        latest state. Behaviour depends on active mode:
+        - INTAKE: weighted field scoring with WEAK/ADEQUATE/STRONG gradations
+        - Other modes: binary MISSING/ADEQUATE scoring against mode patterns
         """
-        # Reset
-        self._scores = {f: FieldScore(field=f) for f in _SCORED_FIELDS}
+        active = self._active_fields()
+
+        # Reset to active field set
+        self._scores = {f: FieldScore(field=f) for f in active}
         self._privacy_gate_required = False
         self._privacy_impact_met = False
 
         # Collect all user text
         user_text = self._collect_user_text(messages)
 
-        # Privacy gate: required when patron data or Kids Mode is mentioned
+        # Privacy gate applies in all modes
         if _PATRON_DATA_PATTERN.search(user_text):
             self._privacy_gate_required = True
             self._privacy_impact_met = bool(_PRIVACY_IMPACT_PATTERN.search(user_text))
 
+        if self._mode == SessionMode.INTAKE:
+            self._update_intake(user_text)
+        else:
+            self._update_mode(user_text)
+
+    def _update_intake(self, user_text: str) -> None:
+        """Intake-mode scoring: weighted fields with WEAK/ADEQUATE/STRONG."""
         for fname, patterns in _FIELD_PATTERNS.items():
             snippets = []
             matched = False
             for pattern in patterns:
                 for m in pattern.finditer(user_text):
                     matched = True
-                    # Grab surrounding context as snippet
                     start = max(0, m.start() - 40)
                     end = min(len(user_text), m.end() + 40)
                     snippets.append(user_text[start:end].strip())
@@ -236,7 +396,6 @@ class ProgressTracker:
                 self._scores[fname].status = FieldStatus.MISSING
                 continue
 
-            # Check for quantification to promote to ADEQUATE/STRONG
             has_quantification = bool(_QUANTIFICATION_PATTERN.search(user_text))
             if has_quantification and fname in ("problem", "impact", "evidence", "metrics"):
                 self._scores[fname].status = FieldStatus.STRONG
@@ -245,20 +404,30 @@ class ProgressTracker:
 
             self._scores[fname].evidence_snippets = snippets[:3]
 
+    def _update_mode(self, user_text: str) -> None:
+        """Non-intake mode scoring: binary MISSING/ADEQUATE per mode patterns."""
+        mode_patterns = _MODE_FIELD_PATTERNS.get(self._mode.value, {})
+        for fname in self._active_fields():
+            patterns = mode_patterns.get(fname, [])
+            matched = any(p.search(user_text) for p in patterns)
+            self._scores[fname].status = FieldStatus.ADEQUATE if matched else FieldStatus.MISSING
+
     def completeness(self) -> float:
-        """Return completeness as a float 0.0–1.0."""
+        """Return completeness as a float 0.0–1.0.
+
+        INTAKE mode uses weighted fields. All other modes use equal weighting
+        with binary MISSING/ADEQUATE scoring.
+        """
         if not self._scores:
             return 0.0
+        if self._mode == SessionMode.INTAKE:
+            return self._completeness_intake()
+        return self._completeness_equal()
+
+    def _completeness_intake(self) -> float:
         weights = {
-            "problem": 2.0,
-            "evidence": 1.5,
-            "users": 1.0,
-            "impact": 1.5,
-            "solution": 1.0,
-            "metrics": 1.0,
-            "risks": 0.5,
-            "scope": 0.5,
-            "platform": 0.5,
+            "problem": 2.0, "evidence": 1.5, "users": 1.0, "impact": 1.5,
+            "solution": 1.0, "metrics": 1.0, "risks": 0.5, "scope": 0.5, "platform": 0.5,
         }
         total_weight = sum(weights.values())
         earned = 0.0
@@ -270,8 +439,16 @@ class ProgressTracker:
                 earned += w * 0.75
             elif score.status == FieldStatus.WEAK:
                 earned += w * 0.35
-            # MISSING = 0
         return earned / total_weight
+
+    def _completeness_equal(self) -> float:
+        if not self._scores:
+            return 0.0
+        adequate = sum(
+            1 for s in self._scores.values()
+            if s.status in (FieldStatus.ADEQUATE, FieldStatus.STRONG)
+        )
+        return adequate / len(self._scores)
 
     def is_ready_for_artifacts(self) -> bool:
         """Return True if completeness meets the artifact gate threshold.
@@ -552,6 +729,20 @@ class DomainContext:
         """Clear cache so next load() re-reads files."""
         self._cache = None
 
+    def load_exercise(self, mode_name: str) -> str:
+        """Load the exercise template for a given mode name.
+
+        Templates live in pipeline/intake/domain-context/exercises/{mode_name}.md.
+        Returns empty string if file not found (graceful degradation).
+        """
+        exercises_dir = os.path.join(self._domain_dir, "exercises")
+        fpath = os.path.join(exercises_dir, f"{mode_name}.md")
+        try:
+            with open(fpath, encoding="utf-8") as f:
+                return f.read().strip()
+        except OSError:
+            return ""
+
 
 # ===========================================================================
 # ContextAssembler — builds layered system prompt for each LLM call
@@ -607,6 +798,31 @@ ideas into rigorous business cases, epics, and user stories.
 - Do not request, store, repeat, or reason about individual patron-level records.
 - Kids Mode features are COPPA-sensitive: flag that data collection must be minimized.
 - Push back on features that assume patron-level data access without explicit justification.
+
+## Epistemic Triage
+Classify significant claims by their evidentiary basis. Apply these tags in conversation and in artifacts:
+- [DATA: source, date] — directly observed and measured
+- [INFERENCE: reasoning] — reasonably derived from data but not directly measured
+- [ASSUMPTION: basis] — believed without specific evidence; must be flagged
+- [UNKNOWN: what would resolve this] — not yet investigated; requires action before spec is complete
+
+When a PM makes a claim, identify which category it falls into and respond accordingly.
+A business case where the problem is [DATA] but the solution is [ASSUMPTION] should be legible as such
+to downstream readers. Do not flatten all claims into the same confidence level.
+
+## Session Modes
+You operate in different facilitation modes depending on what the PM needs. The active mode is
+shown in the Dynamic Overlay. Each mode has a different arc and produces a different artifact:
+
+- INTAKE (default): spec funnel — extract and challenge until business-case/epics/stories are complete
+- WORKING-BACKWARDS: press release first — guide PM to write the end state, then reverse-engineer requirements
+- PREMORTEM: failure scenario — imagine concrete failure, identify causes, commit to mitigations
+- STEELMAN: strongest objection — build the best case against the proposal, then help PM respond
+- PRIORITIZE: ranked candidates — score options, surface dependencies, produce priority stack
+- RETROSPECT: outcome loop — close the gap between what was predicted and what actually happened
+
+In all modes: Priya's behavioral contract is unchanged. No compliments, no code, no fabrication.
+The mode changes the arc and artifact, not the persona.
 
 ## Prohibited
 - Compliments ("Great question!", "I love that idea", etc.)
@@ -693,17 +909,24 @@ no commentary, no caveats inside artifact output.
 _INTERACTION_RULES_BLOCK = """
 # Interaction Rules
 
-1. Conversation arc:
-   - Early turns: open questions, understand problem space
-   - Mid turns: structured gap-filling per ProgressTracker
-   - Late turns: artifact generation (gated by completeness)
-   - Fast-track: skip exploratory phase if input is already strong
+1. Conversation arc depends on active mode (see Dynamic Overlay).
+   Default (INTAKE): early = open questions, mid = gap-filling, late = artifacts.
 
 2. Slash commands:
-   - /help — explain what Priya does and how to use the coach
-   - /status — show current completeness status across business-case fields
-   - /generate — attempt artifact generation (gated by completeness)
-   - /reset — clear session and start over
+   Spec funnel:
+   - /help      — explain what Priya does and list commands
+   - /status    — show completeness status for the current session
+   - /generate  — attempt artifact generation (gated by completeness)
+   - /reset     — clear session and start over (confirm first)
+   - /mode      — show the active session mode
+
+   Session modes (each resets the session):
+   - /intake      — default spec funnel
+   - /wb          — Working Backwards (press release → requirements)
+   - /premortem   — Pre-mortem (failure scenario → risk synthesis)
+   - /steelman    — Steel-man (strongest objection → refined position)
+   - /prioritize  — Prioritization (candidates → priority stack)
+   - /retro       — Retrospective (prior spec → outcome loop)
 
 3. Multimodal inputs:
    - URLs, file uploads, images are context; extract relevant product information
@@ -713,6 +936,7 @@ _INTERACTION_RULES_BLOCK = """
    - Do NOT generate artifacts if ProgressTracker completeness is below threshold
    - Tell the user which fields are still incomplete
    - Do not offer to "generate a partial" artifact — it degrades downstream quality
+   - Each mode produces a different artifact (see exercise template for schema)
 """.strip()
 
 
@@ -751,6 +975,7 @@ class ContextAssembler:
 
         Args:
             progress: Current ProgressTracker state (for dynamic overlays).
+                      The active mode is read from progress.mode.
             turn_count: Number of turns so far (drives phase-awareness).
             memory_context: Text from CoachMemory for this session.
             extra_overlay: Any additional instruction text to append.
@@ -761,6 +986,7 @@ class ContextAssembler:
         Returns:
             Complete system prompt string ready for the LLM.
         """
+        mode = progress.mode
         sections: list[str] = []
 
         # Layer 1: Persona and protocol
@@ -772,16 +998,21 @@ class ContextAssembler:
             sections.append("# Domain Knowledge\n\n" + domain_text)
 
         # Layer 2b: RAG-retrieved context (Phase 2, additive only)
-        # Static DomainContext always loads first and is never skipped.
-        # If no context_sources are registered or retrieval fails, this
-        # layer is simply absent — no change to coaching behaviour.
         if self._context_sources and conversation_state is not None:
             rag_text = self._build_rag_layer(conversation_state, domain_text or "")
             if rag_text:
                 sections.append("# Additional Retrieved Context\n\n" + rag_text)
 
-        # Layer 3: Artifact schemas
-        sections.append(_ARTIFACT_SCHEMAS_BLOCK)
+        # Layer 2c: Exercise template (non-intake modes only)
+        if mode != SessionMode.INTAKE:
+            exercise_text = self._domain.load_exercise(mode.value)
+            if exercise_text:
+                sections.append(f"# Active Exercise: {mode.value}\n\n{exercise_text}")
+
+        # Layer 3: Artifact schemas (intake mode uses standard schemas;
+        # other modes use the mode-specific schema embedded in the exercise template)
+        if mode == SessionMode.INTAKE:
+            sections.append(_ARTIFACT_SCHEMAS_BLOCK)
 
         # Layer 4: Interaction rules
         sections.append(_INTERACTION_RULES_BLOCK)
@@ -843,12 +1074,14 @@ class ContextAssembler:
 
     @staticmethod
     def _build_progress_overlay(progress: ProgressTracker, turn_count: int) -> str:
-        """Build a turn-count-aware guidance overlay."""
+        """Build a turn-count-aware and mode-aware guidance overlay."""
+        mode = progress.mode
         completeness = progress.completeness()
         missing = progress.missing_fields()
         ready = progress.is_ready_for_artifacts()
 
         lines: list[str] = ["# Current Session State (Dynamic Overlay)"]
+        lines.append(f"Mode: {mode.value}")
         lines.append(f"Turn count: {turn_count}")
         lines.append(f"Completeness: {completeness:.0%}")
         lines.append(f"Artifact ready: {ready}")
@@ -868,12 +1101,45 @@ class ContextAssembler:
                 "Ask about privacy impact if not yet addressed."
             )
 
-        if turn_count <= 2:
-            lines.append("Phase: EARLY — ask open, exploratory questions. Understand the problem space.")
-        elif turn_count <= 6:
-            lines.append("Phase: MID — structured gap-filling. Address missing fields systematically.")
-        else:
-            lines.append("Phase: LATE — push toward artifact generation if completeness allows.")
+        # Mode-specific phase guidance
+        if mode == SessionMode.INTAKE:
+            if turn_count <= 2:
+                lines.append("Phase: EARLY — ask open, exploratory questions. Understand the problem space.")
+            elif turn_count <= 6:
+                lines.append("Phase: MID — structured gap-filling. Address missing fields systematically.")
+            else:
+                lines.append("Phase: LATE — push toward artifact generation if completeness allows.")
+        elif mode == SessionMode.WORKING_BACKWARDS:
+            lines.append(
+                "Exercise: WORKING BACKWARDS. Guide the PM through the press release format: "
+                "headline → customer problem → solution experience → patron quote → admin quote → internal FAQ. "
+                "Challenge vague or generic answers. Push for specific, concrete language in the customer's voice."
+            )
+        elif mode == SessionMode.PREMORTEM:
+            lines.append(
+                "Exercise: PRE-MORTEM. Help the PM imagine concrete failure. "
+                "Start with a vivid failure scenario, then work systematically through causes: "
+                "adoption failure, measurement failure, execution failure. "
+                "End with specific mitigation commitments, not general platitudes."
+            )
+        elif mode == SessionMode.STEELMAN:
+            lines.append(
+                "Exercise: STEEL-MAN. Your job is to construct the strongest possible case AGAINST the PM's proposal, "
+                "then help them respond to it. Do not pull punches. A weak counter-argument is useless. "
+                "When the PM responds, evaluate whether their response actually addresses the objection."
+            )
+        elif mode == SessionMode.PRIORITIZE:
+            lines.append(
+                "Exercise: PRIORITIZATION. Identify all candidates, agree on scoring criteria "
+                "(impact × confidence ÷ effort is a reasonable default), score each, and produce a ranked recommendation. "
+                "Challenge candidates with weak rationale. Surface hidden dependencies."
+            )
+        elif mode == SessionMode.RETROSPECT:
+            lines.append(
+                "Exercise: RETROSPECTIVE. Help the PM close the outcome loop on a prior spec. "
+                "First establish what was predicted, then what actually happened, then the gap. "
+                "The goal is a crisp learning that feeds back into CoachMemory."
+            )
 
         if ready:
             lines.append(
@@ -891,7 +1157,28 @@ class ContextAssembler:
 # CoachEngine — multi-turn conversation controller
 # ===========================================================================
 
-_SLASH_COMMANDS = {"/help", "/status", "/generate", "/reset"}
+_SLASH_COMMANDS = {
+    "/help", "/status", "/generate", "/reset", "/mode",
+    "/intake", "/wb", "/premortem", "/steelman", "/prioritize", "/retro",
+}
+
+_MODE_SLASH_MAP: dict[str, SessionMode] = {
+    "/intake":     SessionMode.INTAKE,
+    "/wb":         SessionMode.WORKING_BACKWARDS,
+    "/premortem":  SessionMode.PREMORTEM,
+    "/steelman":   SessionMode.STEELMAN,
+    "/prioritize": SessionMode.PRIORITIZE,
+    "/retro":      SessionMode.RETROSPECT,
+}
+
+_MODE_ARTIFACT_NAMES: dict[SessionMode, str] = {
+    SessionMode.INTAKE:            "business-case.md, epics.md, stories-draft.md",
+    SessionMode.WORKING_BACKWARDS: "working-backwards.md",
+    SessionMode.PREMORTEM:         "pre-mortem.md",
+    SessionMode.STEELMAN:          "steelman.md",
+    SessionMode.PRIORITIZE:        "priority-stack.md",
+    SessionMode.RETROSPECT:        "retrospect.md",
+}
 
 # Artifact generation refused response (used when gating)
 _ARTIFACT_GATE_REFUSAL_TEMPLATE = (
@@ -904,18 +1191,28 @@ _ARTIFACT_GATE_REFUSAL_TEMPLATE = (
 _HELP_TEXT = """
 Priya Desai — Product Development Coach
 
-I help you build rigorous business cases, epics, and user stories for Hoopla Digital's product team.
+I help Hoopla Digital's product team build rigorous specs and think more clearly.
 
-Commands:
-  /help     — show this message
-  /status   — show completeness status for the current business case
-  /generate — generate artifacts (business-case.md, epics.md, stories-draft.md)
-  /reset    — clear this session and start over
+Session modes — each resets the conversation:
+  /intake      — (default) spec funnel: business-case, epics, stories
+  /wb          — Working Backwards: start from the ideal end state, work backward
+  /premortem   — Pre-mortem: imagine failure, surface causes, commit to mitigations
+  /steelman    — Steel-man: build the strongest objection to a proposal, then respond
+  /prioritize  — Prioritization: score candidates, surface dependencies, rank them
+  /retro       — Retrospective: close the outcome loop on a prior spec
+
+Session commands:
+  /help        — show this message
+  /status      — show completeness for the current session
+  /generate    — generate artifacts (gated by completeness)
+  /reset       — clear this session and start over
+  /mode        — show active mode
 
 Tips:
-  - Start by describing the problem you're trying to solve, not the feature you want to build.
-  - Bring data if you have it. Quantified problems get better specs.
-  - I'll push back if something is vague or missing. That's intentional.
+  - Start with the problem, not the feature. Always.
+  - Bring data. Quantified problems get better specs.
+  - Use /wb before /intake when you want to clarify the end state first.
+  - Use /premortem on anything with a non-obvious adoption or measurement risk.
 """.strip()
 
 
@@ -938,13 +1235,14 @@ class CoachEngine:
         domain_context: DomainContext | None = None,
         memory_context: str = "",
         context_sources: list[ContextSource] | None = None,
+        initial_mode: SessionMode = SessionMode.INTAKE,
     ):
         self._backend = backend
         self._assembler = ContextAssembler(
             domain_context=domain_context,
             context_sources=context_sources,
         )
-        self._tracker = ProgressTracker()
+        self._tracker = ProgressTracker(mode=initial_mode)
         self._detector = SignalDetector()
         self._memory_context = memory_context
         self._messages: list[dict] = []
@@ -1027,11 +1325,16 @@ class CoachEngine:
         self._append_message("assistant", full_response)
         self._turn_count += 1
 
-    def reset(self) -> None:
-        """Clear conversation history and reset state."""
+    def reset(self, mode: SessionMode | None = None) -> None:
+        """Clear conversation history and reset state.
+
+        If mode is provided, switches to that mode. Otherwise keeps the
+        current mode (useful for /reset within a mode session).
+        """
         self._messages = []
         self._turn_count = 0
-        self._tracker = ProgressTracker()
+        new_mode = mode if mode is not None else self._tracker.mode
+        self._tracker = ProgressTracker(mode=new_mode)
 
     @property
     def messages(self) -> list[dict]:
@@ -1042,6 +1345,10 @@ class CoachEngine:
         return self._tracker
 
     @property
+    def mode(self) -> SessionMode:
+        return self._tracker.mode
+
+    @property
     def turn_count(self) -> int:
         return self._turn_count
 
@@ -1050,16 +1357,59 @@ class CoachEngine:
     # ------------------------------------------------------------------
 
     def _handle_slash(self, command: str) -> str:
+        # Mode switch commands
+        if command in _MODE_SLASH_MAP:
+            new_mode = _MODE_SLASH_MAP[command]
+            self.reset(mode=new_mode)
+            return self._mode_switch_message(new_mode)
+
         if command == "/help":
             return _HELP_TEXT
+        elif command == "/mode":
+            return f"Active mode: {self._tracker.mode.value}"
         elif command == "/status":
             return self._status_report()
         elif command == "/generate":
             return self._handle_generate()
         elif command == "/reset":
+            current_mode = self._tracker.mode
             self.reset()
-            return "Session cleared. Start by describing the problem you're trying to solve."
+            return f"Session cleared. Mode: {current_mode.value}. Start fresh."
         return f"Unknown command: {command}"
+
+    @staticmethod
+    def _mode_switch_message(mode: SessionMode) -> str:
+        descriptions = {
+            SessionMode.INTAKE: (
+                "Switched to INTAKE mode. Describe the problem you're trying to solve."
+            ),
+            SessionMode.WORKING_BACKWARDS: (
+                "Switched to WORKING BACKWARDS mode.\n\n"
+                "Start by writing a headline: one sentence that announces this feature as if it has already shipped. "
+                "Who benefits, and what does it do for them? Don't describe the feature — describe the outcome."
+            ),
+            SessionMode.PREMORTEM: (
+                "Switched to PRE-MORTEM mode.\n\n"
+                "Briefly describe the feature or initiative we're stress-testing. "
+                "Then I'll ask you to imagine it failed — completely — and we'll work backward from there."
+            ),
+            SessionMode.STEELMAN: (
+                "Switched to STEEL-MAN mode.\n\n"
+                "Describe your proposal. Once I understand it, I'll construct the strongest possible case against it. "
+                "Then we'll work through your response."
+            ),
+            SessionMode.PRIORITIZE: (
+                "Switched to PRIORITIZE mode.\n\n"
+                "List the candidates you're choosing between. Then we'll agree on scoring criteria "
+                "and work through the ranking together."
+            ),
+            SessionMode.RETROSPECT: (
+                "Switched to RETROSPECT mode.\n\n"
+                "Which feature or initiative are we reviewing? Tell me what the original plan predicted, "
+                "and I'll help you map what actually happened and why."
+            ),
+        }
+        return descriptions.get(mode, f"Switched to {mode.value} mode.")
 
     def _status_report(self) -> str:
         completeness = self._tracker.completeness()
@@ -1079,22 +1429,21 @@ class CoachEngine:
         if not self._tracker.is_ready_for_artifacts():
             missing = self._tracker.missing_fields()
             return _ARTIFACT_GATE_REFUSAL_TEMPLATE.format(missing=", ".join(missing))
-        # Completeness threshold met — let the LLM generate
-        # We inject a one-shot generate instruction and stream back
-        generate_parts: list[str] = []
+
+        mode = self._tracker.mode
+        artifact_names = _MODE_ARTIFACT_NAMES.get(mode, "artifacts")
         system_prompt = self._assembler.build(
             progress=self._tracker,
             turn_count=self._turn_count,
             memory_context=self._memory_context,
             extra_overlay=(
-                "# GENERATE NOW\n"
-                "The user has requested artifact generation. Completeness threshold is met. "
-                "Generate all three artifacts (business-case.md, epics.md, stories-draft.md) "
-                "using the schemas defined above. Output structured markdown only. "
-                "No narrative introduction."
+                f"# GENERATE NOW\n"
+                f"The user has requested artifact generation. Completeness threshold is met. "
+                f"Generate: {artifact_names}. "
+                f"Use the schema defined in the exercise template (or artifact schemas block for intake). "
+                f"Output structured markdown only. No narrative introduction."
             ),
         )
-        # We call chat (blocking) here so we can return the full string
         result = self._backend.chat(
             messages=self._messages,
             system=system_prompt,

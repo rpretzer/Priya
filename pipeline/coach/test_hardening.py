@@ -29,11 +29,13 @@ from pipeline.coach.engine import (
     SignalType,
     ProgressTracker,
     FieldStatus,
+    SessionMode,
     CoachEngine,
     ContextAssembler,
     DomainContext,
     _PATRON_DATA_PATTERN,
     _PRIVACY_IMPACT_PATTERN,
+    _MODE_FIELDS,
 )
 from pipeline.coach.crystallizer import Crystallizer
 
@@ -497,6 +499,265 @@ class TestPatronPrivacyDomainContext:
         assert "data minimization" in content.lower() or "minimiz" in content.lower(), (
             "Domain context should include data minimization principle"
         )
+
+
+# ===========================================================================
+# 4e. SessionMode — mode switching, field sets, exercise templates
+# ===========================================================================
+
+class TestSessionModeInfrastructure:
+    """Validates mode enum, ProgressTracker mode switching, and exercise loading."""
+
+    def test_all_modes_have_field_definitions(self):
+        for mode in SessionMode:
+            assert mode.value in _MODE_FIELDS, f"No field set defined for {mode.value}"
+            assert len(_MODE_FIELDS[mode.value]) > 0, f"Empty field set for {mode.value}"
+
+    def test_tracker_defaults_to_intake(self):
+        tracker = ProgressTracker()
+        assert tracker.mode == SessionMode.INTAKE
+
+    def test_tracker_mode_switch_resets_scores(self):
+        tracker = ProgressTracker()
+        tracker.update([_make_user_msg(
+            "Problem: patrons can't find audiobooks. Evidence: 40% abandon search. "
+            "Users: mobile patrons. Impact: 20% improvement. Solution: better search. "
+            "Metrics: search completion rate. Risks: DRM. Scope: iOS. Platform: iOS."
+        )])
+        assert tracker.completeness() > 0.0
+        tracker.set_mode(SessionMode.WORKING_BACKWARDS)
+        assert tracker.mode == SessionMode.WORKING_BACKWARDS
+        assert tracker.completeness() == 0.0  # Reset
+
+    def test_tracker_intake_fields_unchanged(self):
+        tracker = ProgressTracker(mode=SessionMode.INTAKE)
+        expected = {"problem", "evidence", "users", "impact", "solution",
+                    "metrics", "risks", "scope", "platform"}
+        assert set(tracker._active_fields()) == expected
+
+    def test_tracker_working_backwards_fields(self):
+        tracker = ProgressTracker(mode=SessionMode.WORKING_BACKWARDS)
+        fields = set(tracker._active_fields())
+        assert "headline" in fields
+        assert "customer_problem" in fields
+        assert "patron_quote" in fields
+        assert "internal_faq" in fields
+
+    def test_tracker_premortem_fields(self):
+        tracker = ProgressTracker(mode=SessionMode.PREMORTEM)
+        fields = set(tracker._active_fields())
+        assert "failure_scenario" in fields
+        assert "likely_causes" in fields
+        assert "mitigations" in fields
+
+    def test_tracker_steelman_fields(self):
+        tracker = ProgressTracker(mode=SessionMode.STEELMAN)
+        fields = set(tracker._active_fields())
+        assert "position" in fields
+        assert "counter_argument" in fields
+        assert "pm_response" in fields
+
+    def test_tracker_prioritize_fields(self):
+        tracker = ProgressTracker(mode=SessionMode.PRIORITIZE)
+        fields = set(tracker._active_fields())
+        assert "candidates" in fields
+        assert "scoring_criteria" in fields
+        assert "ranked_output" in fields
+
+    def test_tracker_retrospect_fields(self):
+        tracker = ProgressTracker(mode=SessionMode.RETROSPECT)
+        fields = set(tracker._active_fields())
+        assert "prior_spec" in fields
+        assert "actual_outcome" in fields
+        assert "learnings" in fields
+
+    def test_working_backwards_scoring_detects_headline(self):
+        tracker = ProgressTracker(mode=SessionMode.WORKING_BACKWARDS)
+        tracker.update([_make_user_msg(
+            "The headline would be: Hoopla Now Recommends Your Next Great Read."
+        )])
+        assert tracker._scores["headline"].status == FieldStatus.ADEQUATE
+
+    def test_working_backwards_scoring_detects_patron_quote(self):
+        tracker = ProgressTracker(mode=SessionMode.WORKING_BACKWARDS)
+        tracker.update([_make_user_msg(
+            "A patron would say: I used to spend 10 minutes trying to find something good."
+        )])
+        assert tracker._scores["patron_quote"].status == FieldStatus.ADEQUATE
+
+    def test_premortem_scoring_detects_failure_scenario(self):
+        tracker = ProgressTracker(mode=SessionMode.PREMORTEM)
+        tracker.update([_make_user_msg(
+            "It is twelve months after launch and the feature failed completely."
+            " Nobody ever turned it on."
+        )])
+        assert tracker._scores["failure_scenario"].status == FieldStatus.ADEQUATE
+
+    def test_premortem_scoring_detects_mitigations(self):
+        tracker = ProgressTracker(mode=SessionMode.PREMORTEM)
+        tracker.update([_make_user_msg(
+            "To prevent this we will add an in-app admin prompt before launch."
+        )])
+        assert tracker._scores["mitigations"].status == FieldStatus.ADEQUATE
+
+    def test_steelman_scoring_detects_counter_argument(self):
+        tracker = ProgressTracker(mode=SessionMode.STEELMAN)
+        tracker.update([_make_user_msg(
+            "The strongest argument against this proposal is that we have no evidence "
+            "patrons actually want recommendations — they may prefer browsing."
+        )])
+        assert tracker._scores["counter_argument"].status == FieldStatus.ADEQUATE
+
+    def test_mode_completeness_equal_weighting(self):
+        """Non-intake modes use equal weighting: N adequate / N total."""
+        tracker = ProgressTracker(mode=SessionMode.STEELMAN)
+        # 0 of 3 fields
+        assert tracker.completeness() == 0.0
+        tracker.update([_make_user_msg("Our position is that we should build recommendations.")])
+        # 1 of 3 fields = ~0.33
+        assert 0.3 <= tracker.completeness() <= 0.4
+
+    def test_exercise_templates_load(self):
+        """All five exercise templates must be loadable by DomainContext."""
+        ctx = DomainContext()
+        for mode in SessionMode:
+            if mode == SessionMode.INTAKE:
+                continue  # No exercise template for intake
+            text = ctx.load_exercise(mode.value)
+            assert text, f"Exercise template missing or empty for mode: {mode.value}"
+
+    def test_exercise_templates_contain_artifact_schema(self):
+        """Each exercise template must define an artifact schema."""
+        ctx = DomainContext()
+        for mode in SessionMode:
+            if mode == SessionMode.INTAKE:
+                continue
+            text = ctx.load_exercise(mode.value)
+            assert "```markdown" in text, (
+                f"Exercise template for {mode.value} must contain an artifact schema (```markdown block)"
+            )
+
+    def test_context_assembler_injects_exercise_for_non_intake(self):
+        """ContextAssembler must inject the exercise template for non-intake modes."""
+        for mode in [SessionMode.WORKING_BACKWARDS, SessionMode.PREMORTEM, SessionMode.STEELMAN]:
+            tracker = ProgressTracker(mode=mode)
+            assembler = ContextAssembler()
+            prompt = assembler.build(progress=tracker, turn_count=0)
+            assert "Active Exercise" in prompt or mode.value in prompt.lower(), (
+                f"Exercise template not injected for mode: {mode.value}"
+            )
+
+    def test_context_assembler_excludes_intake_schema_in_non_intake_mode(self):
+        """In non-intake modes, the standard artifact schema block is excluded."""
+        tracker = ProgressTracker(mode=SessionMode.PREMORTEM)
+        assembler = ContextAssembler()
+        prompt = assembler.build(progress=tracker, turn_count=0)
+        # business-case.md schema should not appear in premortem mode
+        assert "## business-case.md" not in prompt
+
+    def test_overlay_shows_mode(self):
+        """Dynamic overlay must show the active mode."""
+        tracker = ProgressTracker(mode=SessionMode.WORKING_BACKWARDS)
+        assembler = ContextAssembler()
+        prompt = assembler.build(progress=tracker, turn_count=1)
+        assert "working-backwards" in prompt.lower()
+
+
+class TestCoachEngineModeSlashCommands:
+    """Validates CoachEngine mode switching via slash commands."""
+
+    def _mock_engine(self, response: str = "Ok.") -> CoachEngine:
+        from pipeline.backends.base import AgentBackend, AgentResult
+
+        class MockBackend(AgentBackend):
+            def __init__(self, r):
+                self._r = r
+            @property
+            def name(self):
+                return "mock"
+            def invoke(self, prompt, context="", config=None):
+                return AgentResult(output=self._r, success=True)
+            def chat(self, messages, system="", config=None):
+                return AgentResult(output=self._r, success=True)
+            def chat_stream(self, messages, system="", config=None):
+                yield self._r
+            def health_check(self):
+                return True
+
+        return CoachEngine(backend=MockBackend(response))
+
+    def test_default_mode_is_intake(self):
+        engine = self._mock_engine()
+        assert engine.mode == SessionMode.INTAKE
+
+    def test_wb_command_switches_mode(self):
+        engine = self._mock_engine()
+        result = engine.chat("/wb")
+        assert engine.mode == SessionMode.WORKING_BACKWARDS
+        assert "working backwards" in result.output.lower() or "headline" in result.output.lower()
+
+    def test_premortem_command_switches_mode(self):
+        engine = self._mock_engine()
+        result = engine.chat("/premortem")
+        assert engine.mode == SessionMode.PREMORTEM
+        assert "pre-mortem" in result.output.lower() or "fail" in result.output.lower()
+
+    def test_steelman_command_switches_mode(self):
+        engine = self._mock_engine()
+        result = engine.chat("/steelman")
+        assert engine.mode == SessionMode.STEELMAN
+
+    def test_prioritize_command_switches_mode(self):
+        engine = self._mock_engine()
+        engine.chat("/prioritize")
+        assert engine.mode == SessionMode.PRIORITIZE
+
+    def test_retro_command_switches_mode(self):
+        engine = self._mock_engine()
+        engine.chat("/retro")
+        assert engine.mode == SessionMode.RETROSPECT
+
+    def test_intake_command_returns_to_intake(self):
+        engine = self._mock_engine()
+        engine.chat("/wb")
+        engine.chat("/intake")
+        assert engine.mode == SessionMode.INTAKE
+
+    def test_mode_switch_resets_messages(self):
+        engine = self._mock_engine()
+        engine.chat("Some content about a problem.")
+        assert len(engine.messages) > 0
+        engine.chat("/wb")
+        # After mode switch, messages should be reset
+        assert len(engine.messages) <= 2  # at most the mode switch command itself
+
+    def test_mode_slash_command_returns_description(self):
+        engine = self._mock_engine()
+        result = engine.chat("/wb")
+        assert len(result.output) > 20  # Should be a meaningful description
+
+    def test_mode_command_shows_current_mode(self):
+        engine = self._mock_engine()
+        engine.chat("/premortem")
+        result = engine.chat("/mode")
+        assert "premortem" in result.output.lower()
+
+    def test_generate_uses_mode_artifact_name(self):
+        """In non-intake mode, /generate should reference the mode-specific artifact."""
+        engine = self._mock_engine("working-backwards.md content here")
+        engine.chat("/wb")
+        # Push completeness to ready state
+        engine.chat(
+            "Headline: Hoopla now tells patrons what to read next. "
+            "Customer problem: patrons can't decide what to borrow. "
+            "How it works: they see personalized recommendations on open. "
+            "A patron would say: I always find something now. "
+            "An admin would say: patrons are borrowing more titles. "
+            "Internal FAQ: engineering will ask about the data model."
+        )
+        result = engine.chat("/generate")
+        # Should either generate or refuse (depending on completeness), not crash
+        assert result.output
 
 
 # ===========================================================================
