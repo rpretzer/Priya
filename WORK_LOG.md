@@ -329,3 +329,21 @@ Key findings:
 
 ### Outputs
 - docs/proposal-spec-as-acceptance-criteria.md
+### Human Request
+> Fresh code review of the coaching core using the new model.
+
+### Chain of Thought
+Re-read engine.py, base.py, llamacpp.py, crystallizer.py, context_retriever.py from scratch rather than relying on prior subagent summaries. Ran empirical probes against ProgressTracker/SignalDetector.
+
+Key findings (review only, no fixes applied — SignalDetector/ProgressTracker changes require hardening suite + approval per CLAUDE.md):
+1. Artifact gate gameable: global quantification promotion lets one irrelevant number promote problem/evidence/impact/metrics to STRONG (empirically: vague keyword-dropping message scored 0.789, passed gate)
+2. Singular-only regexes: 'users', 'patrons', 'librarians', 'unknowns' (plural) never match — users field MISSING even when explicitly stated
+3. SignalDetector output discarded in CoachEngine.chat_stream — signals never reach the prompt; NO_ALTERNATIVES and UNMEASURABLE_GOAL enum members have no patterns at all
+4. MISSING_ROLLOUT signal inverted — fires when rollout IS mentioned
+5. RAG dedup dead end-to-end: ContextAssembler._build_rag_layer accepts static_context but never uses it; ContextRetriever.get_context never passes static_context to query()
+6. /reset pollutes the freshly cleared history with the /reset exchange
+7. CoachEngine.chat() hardcodes success=True; _handle_generate ignores result.success
+8. Minor: llamacpp chat_stream '-> None' annotation, no retry; crystallizer splits hyphenated words ('trade-off' -> 'trade'+'off'); 'finally' misclassified as decision
+
+### Outputs
+- Review findings reported in conversation (no code changes)
